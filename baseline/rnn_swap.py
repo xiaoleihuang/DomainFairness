@@ -14,10 +14,12 @@ import utils
 
 
 def build_model(params):
-    clf_path = './clf/gru.' + params['tname']
-    result_path = './results/gru.' + params['tname']
+    clf_path = './clf/gru_swap.'+params['tname']
+    result_path = './results/gru_swap.'+params['tname']
 
-    if not os.path.exists(clf_path):
+    if os.path.exists(clf_path):
+        best_model = pickle.load(open(clf_path, 'rb'))
+    else:
         if params['num_cl'] > 2:
             pred_func = 'softmax'
             loss_func = 'categorical_crossentropy'
@@ -26,26 +28,25 @@ def build_model(params):
             loss_func = 'binary_crossentropy'
 
         # load embedding matrix
-        wt_matrix = utils.build_wt(params['emb_file'], opt='embd_unbias.npy')
+        wt_matrix = utils.build_wt(params['emb_file'])
 
         # define the GRU model
-        text_input = Input(
+        inputs = Input(
             shape=(params['seq_max_len'],), dtype='int32', name='input'
         )
         embeds = Embedding(
             wt_matrix.shape[0], wt_matrix.shape[1],
             weights=[wt_matrix], input_length=params['seq_max_len'],
             trainable=True, name='embedding'
-        )(text_input)
+        )(inputs)
         bigru = Bidirectional(GRU(
             params['rnn_size'], kernel_initializer="glorot_uniform"
         ))(embeds)
-
         predicts = Dense(
             params['num_cl'], activation=pred_func, name='predict'
         )(bigru)
 
-        model = Model(inputs=text_input, outputs=predicts)
+        model = Model(inputs=inputs, outputs=predicts)
         model.compile(
             loss=loss_func, optimizer=params['opt'],
             metrics=['accuracy']
@@ -57,7 +58,8 @@ def build_model(params):
         utils.build_indices(params['tname'])
 
         best_valid_f1 = 0.0
-
+        best_model = None
+        
         for e in range(params['epochs']):
             accuracy = 0.0
             loss = 0.0
@@ -65,9 +67,9 @@ def build_model(params):
 
             print('--------------Epoch: {}--------------'.format(e))
 
-            # load the datasets
+            # load the datasets (swap)
             train_iter = utils.data_iter(
-                params['tname'], suffix='train',
+                params['tname']+'_swap', suffix='train',
                 batch_size=params['batch_size']
             )
 
@@ -103,7 +105,7 @@ def build_model(params):
 
             for _, x_valid, y_valid in valid_iter:
                 tmp_preds = model.predict([x_valid])
-
+                
                 for item_tmp in tmp_preds:
                     y_preds.append(round(item_tmp[0]))
                 y_valids.extend(y_valid)
@@ -113,7 +115,9 @@ def build_model(params):
 
             if best_valid_f1 < valid_f1:
                 best_valid_f1 = valid_f1
-                pickle.dump(model, open(clf_path, 'wb'))
+                best_model = model
+
+                pickle.dump(best_model, open(clf_path, 'wb'))
 
     print('------------------------------Test---------------------------------')
     if not os.path.exists(result_path):
@@ -124,8 +128,6 @@ def build_model(params):
             params['tname'], suffix='test',
             batch_size=params['batch_size']
         )
-
-        best_model = pickle.load(open(clf_path, 'rb'))
 
         data = []
         for data_batch, x_test, y_test in test_iter:
@@ -147,8 +149,8 @@ def build_model(params):
             for idx, label in enumerate(y_preds_test):
                 data[idx].append(str(y_preds_test[idx]))
                 data[idx].append(str(y_preds_prob[idx]))
-
-                wfile.write('\t'.join(data[idx]) + '\n')
+                
+                wfile.write('\t'.join(data[idx])+'\n')
     utils.fair_eval(result_path)
 
 
@@ -156,27 +158,28 @@ if __name__ == '__main__':
     # gender
     parameters = {
         'tname': 'ethMulti', 'seq_max_len': 30, 'dp_rate': 0.3, 'opt': 'rmsprop', 'epochs': 10,
-        'class_wt': {1: 3, 0: 1}, 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
-        'emb_file': '../embeddings/GoogleNews-vectors-negative300.bin'
+        'class_wt': 'auto', 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
+        'emb_file': '../embeddings/fair/GoogleNews-vectors-negative300-hard-debiased.txt'
     }
-    #    # gender
-    #    build_model(params)
 
-    #    # ethnicity
-    #    params['tname'] = 'ethnicity'
-    #    build_model(params)
-
-    #    # age
-    #    params['tname'] = 'age'
-    #    build_model(params)
-
-    #    # country
-    #    params['tname'] = 'country'
-    #    build_model(params)
-
-    #    # region
-    #    params['tname'] = 'region'
-    #    build_model(params)
+    # # gender
+    # build_model(params)
+    #
+    # # ethnicity
+    # params['tname'] = 'ethnicity'
+    # build_model(params)
+    #
+    # # age
+    # params['tname'] = 'age'
+    # build_model(params)
+    #
+    # # country
+    # params['tname'] = 'country'
+    # build_model(params)
+    #
+    # # region
+    # params['tname'] = 'region'
+    # build_model(params)
 
     # ethnicity-multi
     build_model(parameters)

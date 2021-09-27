@@ -1,4 +1,4 @@
-"""GRU
+"""GRU for blinding some sensitive words as unknown words
 """
 import pickle
 import os
@@ -13,11 +13,47 @@ from keras.models import Model
 import utils
 
 
-def build_model(params):
-    clf_path = './clf/gru.' + params['tname']
-    result_path = './results/gru.' + params['tname']
+def black_list():
+    """To obtain indices of sensitive words.
+        This will help to mask the sensitive words
+    """
+    indices = set()
+    if os.path.exists('./resource/black_indices.txt'):
+        with open('./resource/black_indices.txt') as dfile:
+            for line in dfile:
+                indices.add(int(line.strip()))
+    else:
+        with open('./resource/replace.txt') as dfile:
+            replaces = set()
+            for line in dfile:
+                # only use unigram
+                if len(line.split(' ')) > 1:
+                    continue
 
-    if not os.path.exists(clf_path):
+                replaces.add(line.strip())
+
+        # load tokenizer to find indices of words
+        tok = pickle.load(open('./vect/keras.tkn', 'rb'))
+
+        # loop through the replacement words
+        for word in tok.word_index:
+            for replace in replaces:
+                if replace in word:
+                    indices.add(tok.word_index[word])
+                    break
+
+    return indices
+
+
+def build_model(params):
+    clf_path = './clf/gru_blind.' + params['tname']
+    result_path = './results/gru_blind.' + params['tname']
+    # blind words
+    black_set = black_list()
+
+    if os.path.exists(clf_path):
+        best_model = pickle.load(open(clf_path, 'rb'))
+    else:
         if params['num_cl'] > 2:
             pred_func = 'softmax'
             loss_func = 'categorical_crossentropy'
@@ -26,26 +62,25 @@ def build_model(params):
             loss_func = 'binary_crossentropy'
 
         # load embedding matrix
-        wt_matrix = utils.build_wt(params['emb_file'], opt='embd_unbias.npy')
+        wt_matrix = utils.build_wt(params['emb_file'])
 
         # define the GRU model
-        text_input = Input(
+        inputs = Input(
             shape=(params['seq_max_len'],), dtype='int32', name='input'
         )
         embeds = Embedding(
             wt_matrix.shape[0], wt_matrix.shape[1],
             weights=[wt_matrix], input_length=params['seq_max_len'],
             trainable=True, name='embedding'
-        )(text_input)
+        )(inputs)
         bigru = Bidirectional(GRU(
             params['rnn_size'], kernel_initializer="glorot_uniform"
         ))(embeds)
-
         predicts = Dense(
             params['num_cl'], activation=pred_func, name='predict'
         )(bigru)
 
-        model = Model(inputs=text_input, outputs=predicts)
+        model = Model(inputs=inputs, outputs=predicts)
         model.compile(
             loss=loss_func, optimizer=params['opt'],
             metrics=['accuracy']
@@ -57,6 +92,7 @@ def build_model(params):
         utils.build_indices(params['tname'])
 
         best_valid_f1 = 0.0
+        best_model = None
 
         for e in range(params['epochs']):
             accuracy = 0.0
@@ -75,6 +111,13 @@ def build_model(params):
             for _, x_train, y_train in train_iter:
                 if len(np.unique(y_train)) == 1:
                     continue
+
+                # blind the words
+                x_train = np.asarray([
+                    [
+                        w_idx if w_idx not in black_set else 0 for w_idx in item
+                    ] for item in x_train
+                ])
 
                 tmp = model.train_on_batch(
                     [x_train], y_train,
@@ -102,6 +145,13 @@ def build_model(params):
             y_valids = []
 
             for _, x_valid, y_valid in valid_iter:
+                # blind the words
+                x_valid = np.asarray([
+                    [
+                        w_idx if w_idx not in black_set else 0 for w_idx in item
+                    ] for item in x_valid
+                ])
+
                 tmp_preds = model.predict([x_valid])
 
                 for item_tmp in tmp_preds:
@@ -113,7 +163,9 @@ def build_model(params):
 
             if best_valid_f1 < valid_f1:
                 best_valid_f1 = valid_f1
-                pickle.dump(model, open(clf_path, 'wb'))
+                best_model = model
+
+                pickle.dump(best_model, open(clf_path, 'wb'))
 
     print('------------------------------Test---------------------------------')
     if not os.path.exists(result_path):
@@ -125,10 +177,15 @@ def build_model(params):
             batch_size=params['batch_size']
         )
 
-        best_model = pickle.load(open(clf_path, 'rb'))
-
         data = []
         for data_batch, x_test, y_test in test_iter:
+            # blind the words
+            x_test = np.asarray([
+                [
+                    w_idx if w_idx not in black_set else 0 for w_idx in item
+                ] for item in x_test
+            ])
+
             tmp_preds = best_model.predict([x_test])
             data.extend(data_batch)
             for item_tmp in tmp_preds:
@@ -149,15 +206,15 @@ def build_model(params):
                 data[idx].append(str(y_preds_prob[idx]))
 
                 wfile.write('\t'.join(data[idx]) + '\n')
-    utils.fair_eval(result_path)
+    utils.eval(result_path)
 
 
 if __name__ == '__main__':
     # gender
     parameters = {
         'tname': 'ethMulti', 'seq_max_len': 30, 'dp_rate': 0.3, 'opt': 'rmsprop', 'epochs': 10,
-        'class_wt': {1: 3, 0: 1}, 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
-        'emb_file': '../embeddings/GoogleNews-vectors-negative300.bin'
+        'class_wt': 'auto', 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
+        'emb_file': '../embeddings/fair/GoogleNews-vectors-negative300-hard-debiased.txt'
     }
     #    # gender
     #    build_model(params)

@@ -1,11 +1,9 @@
-"""measure performance variations across different groups"""
+"""This method implements blindness method in the paper of Counterfactual Fairness in Text Classification through
+Robustness """
 
 import os
-import json
 import pickle
-
-# from gensim.corpora import Dictionary
-# from gensim.models import LdaModel
+import re
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -13,41 +11,38 @@ from sklearn.linear_model import LogisticRegression
 import utils
 
 
-def self_tokenizer(text):
-    return text.split()
+def replace_words(doc, replace):
+    # replace numbers
+    doc = re.sub('^[0-9]+', 'number', doc)
+    # replace words
+    doc = [word if word not in replace else 'identity' for word in doc.split()]
+
+    return ' '.join(doc)
 
 
-def build_lr(task_dic):
-    """Obtain Test Results of prediction
-    """
-    doc_idx = 2
-    result_path = './results/lr.' + task_dic['name']
-    clf_path = './clf/lr.' + task_dic['name']
-    vect_path = './vect/lr.' + task_dic['name']
-
-    # pos features
-    docs_pos = {}
-    with open('../analysis/overlaps/pos/data_tags.tsv') as dfile:
-        dfile.readline()
+def build_lr_blind(task_dic):
+    # load the replacement words
+    with open('./resource/replace.txt') as dfile:
+        replaces = set()
         for line in dfile:
-            line = line.strip().split('\t')
-            doc = json.loads(line[doc_idx])
-            docs_pos[line[0]] = ' '.join([item[1] for item in doc])
+            # only use unigram
+            if len(line.split(' ')) > 1:
+                continue
 
-    # topic features
-    # dictp = '../analysis/overlaps/topic/twitter.dict'
-    # tmodelp = '../analysis/overlaps/topic/twitter.model'
-    # lda_dict = Dictionary.load(dictp)
-    # lda = LdaModel.load(tmodelp)
+            replaces.add(line.strip())
+
+    doc_idx = 2
+    result_path = './results/lr_blind.' + task_dic['name']
+    vect_path = './vect/lr_blind.' + task_dic['name']
+    clf_path = './clf/lr_blind.' + task_dic['name']
 
     # build vectorizer
     print('Building vectorizer....', task_dic['name'])
-    if os.path.exists(vect_path + '1'):
+    if os.path.exists(vect_path):
         vect = pickle.load(
             open(vect_path, 'rb')
         )
     else:
-        vect = []
         docs = []
         with open(task_dic['datap']) as dfile:
             cols = dfile.readline().split('\t')
@@ -57,53 +52,51 @@ def build_lr(task_dic):
                 line = line.strip().split('\t')
                 if line[idx] == 'x':
                     continue
-                docs.append(line[doc_idx])
 
-        vect.append(TfidfVectorizer(
-            ngram_range=(1, 2), max_df=0.9,
-            min_df=2, max_features=8000,
-            stop_words=utils.stopwords()
-        ))
-        vect[0].fit(docs)
+                # replace the words and numbers into IDENTITY and NUMBER
+                docs.append(replace_words(line[doc_idx], replaces))
+
+        vect = TfidfVectorizer(
+            ngram_range=(1, 2),
+            min_df=2, max_features=8000, stop_words=utils.stopwords()
+        )
+        vect.fit(docs)
 
         pickle.dump(vect, open(vect_path, 'wb'))
 
     # build classifier
     print('Building classifier....', task_dic['name'])
-    if os.path.exists(clf_path + '1'):
+    if os.path.exists(clf_path):
         clf = pickle.load(
             open(clf_path, 'rb')
         )
     else:
-        # lda_feas = []
         with open(task_dic['train']) as dfile:
             # cols = dfile.readline().split('\t')
-            data = {'x': [], 'x_pos': [], 'y': []}
+            data = {'x': [], 'y': []}
             for line in dfile:
                 line = line.strip().split('\t')
-                data['x'].append(line[doc_idx])
+
+                # replace the words and numbers into IDENTITY and NUMBER
+                data['x'].append(replace_words(line[doc_idx], replaces))
                 data['y'].append(int(line[-1]))
-                data['x_pos'].append(docs_pos[line[0]])
 
         clf = LogisticRegression(class_weight='balanced', solver='liblinear')
-        clf.fit(vect[0].transform(data['x']), data['y'])
+        clf.fit(vect.transform(data['x']), data['y'])
         pickle.dump(clf, open(clf_path, 'wb'))
 
     # Testing
     print('Testing...', task_dic['name'])
     #    if not os.path.exists(result_path):
     docs = []
-    test_pos = []
-    # lda_feas = []
     with open(task_dic['test']) as dfile:
         dfile.readline()
 
         for line in dfile:
             line = line.strip().split('\t')
             docs.append(line[doc_idx])
-            test_pos.append(docs_pos[line[0]])
 
-    docs = vect[0].transform(docs)
+    docs = vect.transform(docs)
     y_pred = clf.predict(docs)
     y_prob = clf.predict_proba(docs)
 
@@ -125,7 +118,6 @@ if __name__ == '__main__':
         #    'train': '../split_data/gender.train',
         #    'valid': '../split_data/gender.valid',
         #    'test': '../split_data/gender.test',
-        #    'info': None,
         # },
         # {
         #    'name': 'ethnicity',
@@ -133,7 +125,6 @@ if __name__ == '__main__':
         #    'train': '../split_data/ethnicity.train',
         #    'valid': '../split_data/ethnicity.valid',
         #    'test': '../split_data/ethnicity.test',
-        #    'info': {1: [1,2,3], 0: [0]}, # binary mapping attributes
         # },
         # {
         #    'name': 'age',
@@ -169,6 +160,5 @@ if __name__ == '__main__':
         },
 
     ]
-
     for task in task_list:
-        build_lr(task)
+        build_lr_blind(task)

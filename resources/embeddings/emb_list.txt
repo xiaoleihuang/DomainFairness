@@ -1,0 +1,3 @@
+# this file contains a list of available debiased embeddings
+# format: name; paper source; link to the embedding model / how to obtain the embedding;
+1.
