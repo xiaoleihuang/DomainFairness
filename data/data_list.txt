@@ -1,1 +1,6 @@
 # format: name; paper source; link to the data / methods to obtain the data;
+
+1. http://michaeljpaul.com/files/starsem2019_demographics.data.zip
+2. https://dl.acm.org/doi/pdf/10.1145/2736277.2741141
+	https://bitbucket.org/lowlands/release/src/master/WWW2015/data/
+3. https://github.com/xiaoleihuang/Multilingual_Fairness_LREC
