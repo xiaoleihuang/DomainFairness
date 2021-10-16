@@ -49,7 +49,11 @@ def extract_trustpilot(dpath, opath, utable_path):
                     if country is None:
                         country = 'x'
                     else:
-                        country = country.split()[-1].strip()
+                        country = country.strip()
+                        if len(country) == 0:
+                            country = 'x'
+                        else:
+                            country = country.split()[-1]
                 utable[uid]['country'] = country
 
                 for idx, review in enumerate(line['reviews']):
