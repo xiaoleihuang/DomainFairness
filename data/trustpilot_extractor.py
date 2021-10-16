@@ -53,7 +53,10 @@ def extract_trustpilot(dpath, opath, utable_path):
                 utable[uid]['country'] = country
 
                 for idx, review in enumerate(line['reviews']):
-                    date = parse(review['date'])
+                    date = review.get('date', None)
+                    if date is None:
+                        continue
+                    date = parse(date)
                     if age != 'x':
                         age = int(age)
                         cur_age = date.year - age
@@ -87,7 +90,7 @@ def extract_trustpilot(dpath, opath, utable_path):
 
 
 data_dir = './review/trustpilot/'
-for dpath in tqdm(os.listdir(data_dir)):
+for dpath in tqdm([fpath for fpath in os.listdir(data_dir) if fpath != '.DS_Store']):
     dname = dpath.split('.')[0]
     extract_trustpilot(
         data_dir + dpath, '{}{}.tsv'.format(data_dir, dname), '{}/{}_utable.tsv'.format(data_dir, dname)
