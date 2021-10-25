@@ -131,5 +131,4 @@ dmypy.json
 # self define
 /.idea/*
 **/.DS_Store
-/data/*
 /resources/*
