@@ -1,12 +1,23 @@
-from nltk.tokenize import word_tokenize
-import numpy as np
-from sklearn import metrics
+import os
+import pickle
 import json
 
+import gensim
+from keras_preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from nltk.tokenize import word_tokenize
+from torch.utils.data import Dataset
+import numpy as np
+from sklearn import metrics
+import torch
 
-def data_loader(dpath, filter_null=True, lang='english'):
+from transformers import BertTokenizer
+
+
+def data_loader(dpath, domain_name='gender', filter_null=True, lang='english'):
     """
     Default data format, tsv
+    :param domain_name:
     :param lang: Language of the corpus, currently only supports languages defined by punkt
     :param filter_null: if filter out gender is empty or not.
     :param dpath:
@@ -20,16 +31,25 @@ def data_loader(dpath, filter_null=True, lang='english'):
     with open(dpath) as dfile:
         cols = dfile.readline().strip().split('\t')
         doc_idx = cols.index('text')
-        gender_idx = cols.index('gender')
+        domain_idx = cols.index(domain_name)
         label_idx = cols.index('label')
 
         for line in dfile:
             line = line.strip().lower().split('\t')
-            if filter_null and line[gender_idx] == 'x':
+            if filter_null and line[domain_idx] == 'x':
                 continue
 
             # binarize labels in the trustpilot dataset to keep the same format.
-            label = int(line[label_idx])
+            try:
+                label = int(line[label_idx])
+            except ValueError:
+                # encode hate speech data
+                if line[label_idx] in ['0', 'no', 'neither', 'normal']:
+                    label = 0
+                else:
+                    label = 1
+
+            # label trustpilot review scores
             if 'trustpilot' in dpath:
                 if label == 3:
                     continue
@@ -39,7 +59,7 @@ def data_loader(dpath, filter_null=True, lang='english'):
                     label = 0
 
             # encode gender.
-            gender = line[gender_idx].strip()
+            gender = line[domain_idx].strip()
             if gender != 'x':
                 if gender not in ['1', '0']:
                     if 'f' in gender:
@@ -51,8 +71,23 @@ def data_loader(dpath, filter_null=True, lang='english'):
 
             data['docs'].append(' '.join(word_tokenize(line[doc_idx], language=lang)))
             data['labels'].append(label)
-            data['gender'].append(gender)
+            data[domain_name].append(gender)
     return data
+
+
+class TorchDataset(Dataset):
+    def __init__(self, dataset, domain_name):
+        self.dataset = dataset
+        self.domain_name = domain_name
+
+    def __len__(self):
+        return len(self.dataset['docs'])
+
+    def __getitem__(self, idx):
+        if self.domain_name in self.dataset:
+            return self.dataset['docs'][idx], self.dataset['labels'], self.dataset[self.domain_name][idx]
+        else:
+            return self.dataset['docs'][idx], self.dataset['labels'], -1
 
 
 def data_split(data):
@@ -65,30 +100,30 @@ def data_split(data):
     np.random.seed(33)  # for reproductive results
     np.random.shuffle(data_indices)
 
-    train_indices = data_indices[:int(.8*len(data_indices))]
-    dev_indices = data_indices[int(.8*len(data_indices)):int(.9*len(data_indices))]
+    train_indices = data_indices[:int(.8 * len(data_indices))]
+    dev_indices = data_indices[int(.8 * len(data_indices)):int(.9 * len(data_indices))]
     test_indices = data_indices[int(.9 * len(data_indices)):]
     return train_indices, dev_indices, test_indices
 
 
 def cal_fpr(fp, tn):
     """False positive rate"""
-    return fp/(fp+tn)
+    return fp / (fp + tn)
 
 
 def cal_fnr(fn, tp):
     """False negative rate"""
-    return fn/(fn+tp)
+    return fn / (fn + tp)
 
 
 def cal_tpr(tp, fn):
     """True positive rate"""
-    return tp/(tp+fn)
+    return tp / (tp + fn)
 
 
 def cal_tnr(tn, fp):
     """True negative rate"""
-    return tn/(tn+fp)
+    return tn / (tn + fp)
 
 
 def fair_eval(true_labels, pred_labels, domain_labels):
@@ -130,3 +165,90 @@ def fair_eval(true_labels, pred_labels, domain_labels):
             cal_tnr(tn, fp) - cal_tnr(g_tn, g_fp)
         )
     return json.dumps(scores)
+
+
+def build_wt(tkn, emb_path, size, opath):
+    """Build weight using word embedding"""
+    embed_len = len(tkn.word_index)
+    if embed_len > tkn.num_words:
+        embed_len = tkn.num_words
+
+    emb_matrix = np.zeros((embed_len + 1, size))
+    if emb_path.endswith('.bin'):
+        embeds = gensim.models.KeyedVectors.load_word2vec_format(
+            emb_path, binary=True, unicode_errors='ignore'
+        )
+        for pair in zip(embeds.wv.index2word, embeds.wv.syn0):
+            if pair[0] in tkn.word_index and \
+                    tkn.word_index[pair[0]] < tkn.num_words:
+                emb_matrix[tkn.word_index[pair[0]]] = [
+                    float(item) for item in pair[1]
+                ]
+    else:
+        with open(emb_path) as dfile:
+            for line in dfile:
+                line = line.strip().split()
+                if line[0] in tkn.word_index and \
+                        tkn.word_index[line[0]] < tkn.num_words:
+                    emb_matrix[tkn.word_index[line[0]]] = [
+                        float(item) for item in line[1:]
+                    ]
+    np.save(opath, emb_matrix)
+
+
+def build_tok(docs, max_feature, opath):
+    if os.path.exists(opath):
+        return pickle.load(open(opath, 'rb'))
+    else:
+        # load corpus
+        tkn = Tokenizer(num_words=max_feature)
+        tkn.fit_on_texts(docs)
+
+        with open(opath, 'wb') as wfile:
+            pickle.dump(tkn, wfile)
+        return tkn
+
+
+class DataEncoder(object):
+    def __init__(self, params, mtype='rnn'):
+        """
+
+        :param params:
+        :param mtype: Model type, rnn or bert
+        """
+        self.params = params
+        self.mtype = mtype
+        if self.mtype == 'rnn':
+            self.tok = pickle.loads(self.params['tok_path'])
+        elif self.mtype == 'bert':
+            self.tok = BertTokenizer.from_pretrained(params['bert_name'])
+        else:
+            raise ValueError('Only support BERT and RNN data encoders')
+
+    def __call__(self, batch):
+        docs = []
+        labels = []
+        domains = []
+        for text, label, domain in batch:
+            if self.mtype == 'bert':
+                text = self.tok.encode_plus(
+                    text, padding='max_length', max_length=self.params['max_len'],
+                    return_tensors='pt', return_token_type_ids=False,
+                    truncation=True,
+                )
+                docs.append(text['input_ids'][0])
+            else:
+                docs.append(text)
+            labels.append(label)
+            domains.append(domain)
+
+        labels = torch.tensor(labels, dtype=torch.float)
+        domains = torch.tensor(domains)
+        if self.mtype == 'rnn':
+            # padding and tokenize
+            docs = self.tok.texts_to_sequences(docs)
+            docs = pad_sequences(docs)
+            docs = torch.Tensor(docs)
+        else:
+            docs = torch.stack(docs)
+        return docs, labels, domains
