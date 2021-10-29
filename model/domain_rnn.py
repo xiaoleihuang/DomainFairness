@@ -65,7 +65,10 @@ class DomainRNN(nn.Module):
     def forward(self, input_docs, input_domains=None):
         # encode the document from different perspectives
         doc_embs = self.wemb(input_docs)
-        doc_general = self.doc_net_general(doc_embs)
+        _, doc_general = self.doc_net_general(doc_embs)  # omit hidden vectors
+        # concatenate hidden state
+        if self.params['bidirectional']:
+            doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
 
         # mask out unnecessary features
         if self.mode == 'train':
@@ -74,7 +77,10 @@ class DomainRNN(nn.Module):
                     [1 if int(domain.split('_')[1]) == item else 0 for item in input_domains],
                     device=self.params['device']
                 )
-                doc_domain = self.doc_net_domain[domain](doc_embs)
+                _, doc_domain = self.doc_net_domain[domain](doc_embs)  # omit hidden vectors
+                # concatenate hidden state
+                if self.params['bidirectional']:
+                    doc_domain = torch.cat((doc_domain[0, :, :], doc_domain[1, :, :]), -1)
                 # mask out features if domains do not match
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
                 doc_general = torch.hstack((doc_general, doc_domain))
@@ -338,7 +344,7 @@ if __name__ == '__main__':
             'max_len': args.max_len,
             'dp_rate': .2,
             'optimizer': 'rmsprop',
-            'emb_path': '/data/models/embeddings/glove_twitter.vec',
+            'emb_path': '/data/models/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'emb_dim': 200,
             'word_emb_path': os.path.join(model_dir, data_entry[0] + '.npy'),
             'unique_domains': [],

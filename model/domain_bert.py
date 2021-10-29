@@ -20,35 +20,16 @@ class DomainBERT(nn.Module):
         super(DomainBERT, self).__init__()
         self.params = params
 
-        if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
-            self.wemb = nn.Embedding.from_pretrained(
-                torch.FloatTensor(np.load(self.params['word_emb_path']))
-            )
-        else:
-            self.wemb = nn.Embedding(
-                self.params['user_size'], self.params['emb_dim']
-            )
-            self.wemb.reset_parameters()
-            nn.init.kaiming_uniform_(self.wemb.weight, a=np.sqrt(5))
-
-        if self.params['bidirectional']:
-            self.word_hidden_size = self.params['emb_dim'] // 2
-        else:
-            self.word_hidden_size = self.params['emb_dim']
+        self.bert_model = AutoModel.from_pretrained(self.params['bert_name'])
+        self.dropout = nn.Dropout(self.params['dp_rate'])
 
         # domain adaptation
-        self.doc_net_general = nn.GRU(
-            self.params['emb_dim'], self.word_hidden_size,
-            bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
-            batch_first=True
-        )
+        self.doc_net_general = nn.Linear(self.bert_model.config.hidden_size, self.params['emb_dim'])
+
         self.doc_net_domain = nn.ModuleDict()
         for domain in self.params['unique_domains']:
-            self.doc_net_domain['domain_{}'.format(domain)] = nn.GRU(
-                self.params['emb_dim'], self.word_hidden_size,
-                bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
-                batch_first=True
-            )
+            self.doc_net_domain['domain_{}'.format(domain)] = nn.Linear(
+                self.bert_model.config.hidden_size, self.params['emb_dim'])
 
         # prediction
         self.predictor = nn.Linear(self.word_hidden_size * 3, self.params['num_label'])
@@ -65,8 +46,13 @@ class DomainBERT(nn.Module):
 
     def forward(self, input_docs, input_domains=None):
         # encode the document from different perspectives
-        doc_embs = self.wemb(input_docs)
+        doc_embs = self.self.bert_model(
+            input_docs, token_type_ids=None,
+            attention_mask=None
+        )
+        doc_embs = torch.mean(doc_embs[0], dim=1)  # take average of outputs from bert
         doc_general = self.doc_net_general(doc_embs)
+        doc_general = self.dropout(torch.relu(doc_general))
 
         # mask out unnecessary features
         if self.mode == 'train':
@@ -78,6 +64,8 @@ class DomainBERT(nn.Module):
                 doc_domain = self.doc_net_domain[domain](doc_embs)
                 # mask out features if domains do not match
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
+                doc_domain = self.dropout(torch.relu(doc_domain))
+
                 doc_general = torch.hstack((doc_general, doc_domain))
         else:
             # because domain encoder share the same shape with the general domain
@@ -167,11 +155,11 @@ def domain_bert(params):
     )
 
     # build model
-    rnn_model = DomainRNN(params)
-    rnn_model = rnn_model.to(device)
+    bert_model = DomainBERT(params)
+    bert_model = bert_model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
     kl_loss = nn.KLDivLoss().to(device)
-    optimizer = torch.optim.RMSprop(rnn_model.parameters(), lr=params['lr'])
+    optimizer = torch.optim.RMSprop(bert_model.parameters(), lr=params['lr'])
 
     # train the networks
     print('Start to train...')
@@ -179,22 +167,22 @@ def domain_bert(params):
     best_score = 0.
     for epoch in tqdm(range(params['epochs'])):
         train_loss = 0
-        rnn_model.train()
-        rnn_model.change_mode('train')
+        bert_model.train()
+        bert_model.change_mode('train')
 
         for step, train_batch in enumerate(train_data_loader):
             train_batch = tuple(t.to(device) for t in train_batch)
             input_docs, input_labels, input_domains = train_batch
             optimizer.zero_grad()
-            predictions = rnn_model(**{
+            predictions = bert_model(**{
                 'input_docs': input_docs,
                 'input_domains': input_domains
             })
             loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
             for domain in params['unique_domains']:
                 domain_kl = kl_loss(
-                    rnn_model.doc_net_general.weight,
-                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight
+                    bert_model.doc_net_general.weight,
+                    bert_model.doc_net_domain['domain_{}'.format(domain)].weight
                 )
                 domain_kl = params['kl_score'] * domain_kl
                 loss += domain_kl
@@ -213,12 +201,12 @@ def domain_bert(params):
         # evaluate on the valid set
         y_preds = []
         y_trues = []
-        rnn_model.change_mode('valid')
+        bert_model.change_mode('valid')
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
             input_docs, input_labels, input_domains = valid_batch
             with torch.no_grad():
-                predictions = rnn_model(**{
+                predictions = bert_model(**{
                     'input_docs': input_docs,
                     'input_domains': input_domains
                 })
@@ -230,7 +218,7 @@ def domain_bert(params):
         eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='weighted')
         if eval_score > best_score:
             best_score = eval_score
-            torch.save(rnn_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
+            torch.save(bert_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
 
             y_preds = []
             y_probs = []
@@ -242,7 +230,7 @@ def domain_bert(params):
                 input_docs, input_labels, input_domains = test_batch
 
                 with torch.no_grad():
-                    predictions = rnn_model(**{
+                    predictions = bert_model(**{
                         'input_docs': input_docs,
                         'input_domains': input_domains
                     })
@@ -339,7 +327,7 @@ if __name__ == '__main__':
             'max_len': args.max_len,
             'dp_rate': .2,
             'optimizer': 'adamw',
-            'bert_name': '',
+            'bert_name': 'bert-base-uncased',  # vinai/bertweet-base
             'emb_dim': 200,
             'unique_domains': [],
             'bidirectional': False,
@@ -347,5 +335,9 @@ if __name__ == '__main__':
             'num_label': 2,
             'kl_score': 0.001
         }
+
+        # adjust parameters for other languages
+        if parameters['lang'] != 'english':
+            parameters['bert_name'] = 'bert-base-multilingual-uncased'
 
         domain_bert(parameters)
