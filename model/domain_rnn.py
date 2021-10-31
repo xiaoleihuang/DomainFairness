@@ -305,10 +305,10 @@ if __name__ == '__main__':
         os.mkdir(result_dir)
 
     data_list = [
-        ['review_amazon_english', review_dir + 'amazon/amazon.tsv', 'english'],
-        ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
-        ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
-        ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
+        # ['review_amazon_english', review_dir + 'amazon/amazon.tsv', 'english'],
+        # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
+        # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
+        # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
         ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
         ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
         ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
