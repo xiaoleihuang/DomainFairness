@@ -241,9 +241,9 @@ def domain_bert(params):
                 y_probs.extend([item[1] for item in logits])
                 y_domains.extend(input_domains.detach().cpu().numpy())
 
-            with open(params['result_path'], 'w') as wfile:
+            with open(params['result_path'], 'a') as wfile:
                 wfile.write('{}...............................\n'.format(datetime.datetime.now()))
-                wfile.write('Performance Evaluation\n')
+                wfile.write('Performance Evaluation {}\n'.format(params['dname']))
                 wfile.write('F1-weighted score: {}\n'.format(
                     metrics.f1_score(y_true=y_trues, y_pred=y_preds, average='weighted')
                 ))

@@ -7,7 +7,11 @@ from sklearn.base import TransformerMixin
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn import metrics
+
+from tqdm import tqdm
 from nltk.corpus import stopwords
+import nltk
+nltk.download('stopwords')
 from scipy.sparse import lil_matrix, csc_matrix, hstack
 import numpy as np
 from imblearn.over_sampling import RandomOverSampler
@@ -35,7 +39,10 @@ class DomainVectorizer(TransformerMixin):
         # if len(dataset) > 15469:  # this number is length of "./yelp/yelp_Hotels_year_sample.tsv"
         #     self.use_large = True
         print('start to fit')
-        spw_set = set(stopwords.words(self.params['lang']))
+        try:
+            spw_set = set(stopwords.words(self.params['lang']))
+        except OSError:
+            spw_set = None
         self.uniq_domains = sorted(
             np.unique([item for item in dataset[self.params['domain_name']] if item != 'docs']))
         self.tfidf_vec_da = dict.fromkeys(self.uniq_domains)
@@ -45,16 +52,15 @@ class DomainVectorizer(TransformerMixin):
                 print('Domain:' + str(key))
                 self.tfidf_vec_da[key] = TfidfVectorizer(
                     ngram_range=(1, 3), min_df=2, max_features=self.params['max_feature'],
-                    stop_words=spw_set, max_df=0.9, tokenizer=da_tokenizer
+                    stop_words=spw_set, max_df=0.9
                 )
-                new_docs = []
-                for idx, item in enumerate(dataset[self.params['domain_name']]):
-                    if item == key:
-                        new_docs.append(dataset['docs'])
+                new_docs = [
+                    item for idx, item in enumerate(dataset['docs'])
+                        if dataset[self.params['domain_name']][idx] == key]
                 self.tfidf_vec_da[key].fit(new_docs)
             self.tfidf_vec_da["general"] = TfidfVectorizer(
                 ngram_range=(1, 3), min_df=2, max_features=self.params['max_feature'],
-                stop_words=spw_set, max_df=0.9, tokenizer=da_tokenizer
+                stop_words=spw_set, max_df=0.9
             )
             self.tfidf_vec_da["general"].fit(dataset['docs'])
         else:
@@ -62,7 +68,7 @@ class DomainVectorizer(TransformerMixin):
                 print('Domain:' + str(key))
                 self.tfidf_vec_da[key] = os.path.join(self.params['model_dir'], str(key) + '.pkl')
                 tmp_vect = TfidfVectorizer(
-                    min_df=3, tokenizer=da_tokenizer, max_features=self.params['max_feature'],
+                    min_df=3, max_features=self.params['max_feature'],
                     stop_words=spw_set, max_df=0.9, ngram_range=(1, 3),
                 )
                 tmp_vect.fit(
@@ -72,7 +78,7 @@ class DomainVectorizer(TransformerMixin):
                 pickle.dump(tmp_vect, open(self.tfidf_vec_da[key], 'wb'))
 
             tmp_vect = TfidfVectorizer(
-                min_df=3, tokenizer=da_tokenizer, max_features=self.params['max_feature'],
+                min_df=3,  max_features=self.params['max_feature'],
                 stop_words=spw_set, max_df=0.9, ngram_range=(1, 3),
             )
             self.tfidf_vec_da["general"] = os.path.join(self.params['model_dir'], 'general.pkl')
@@ -80,29 +86,25 @@ class DomainVectorizer(TransformerMixin):
             pickle.dump(tmp_vect, open(self.tfidf_vec_da['general'], 'wb'))
         return self
 
-    def transform(self, dataset):
-        fvs = csc_matrix(np.zeros(shape=(len(dataset['docs']), 1)))
+    def transform(self, docs):
+        fvs = csc_matrix(np.zeros(shape=(len(docs), 1)))
 
         if not self.use_large:
             for domain in self.uniq_domains:
-                tmp_fvs = csc_matrix(self.tfidf_vec_da[domain].transform(
-                    [item if dataset[self.params['domain_name']] == domain else ""
-                     for idx, item in enumerate(dataset['docs'])]
-                ))
+                tmp_fvs = csc_matrix(self.tfidf_vec_da[domain].transform(docs))
                 fvs = hstack([fvs, tmp_fvs])
             fvs = fvs[:, 1:]
-            tmp_fvs = csc_matrix(self.tfidf_vec_da['general'].transform(dataset['docs']))
+            tmp_fvs = csc_matrix(self.tfidf_vec_da['general'].transform(docs))
             fvs = hstack([fvs, tmp_fvs])
         else:
             for domain in self.uniq_domains:
                 dm_vect = pickle.load(open(self.tfidf_vec_da[domain], 'rb'))
-                tmp_fvs = csc_matrix(dm_vect.transform(dataset['docs']))
-
+                tmp_fvs = csc_matrix(dm_vect.transform(docs))
                 fvs = hstack([fvs, tmp_fvs])
             fvs = fvs[:, 1:]
 
             dm_vect = pickle.load(open(self.tfidf_vec_da['general'], 'rb'))
-            tmp_fvs = csc_matrix(dm_vect.transform(dataset['docs']))
+            tmp_fvs = csc_matrix(dm_vect.transform(docs))
             fvs = hstack([fvs, tmp_fvs])
         return fvs
 
@@ -118,9 +120,17 @@ class DomainVectorizer(TransformerMixin):
 
 
 def domain_lr(params):
+    print('Loading Data...')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
-    da_vect = DomainVectorizer(params)
-    da_vect.fit(data)
+    print('Building Domain Vectorizer...')
+
+    da_path = os.path.join(params['model_dir'], params['dname']+'-da_vect.pkl')
+    if os.path.exists(da_path):
+        da_vect = pickle.load(open(da_path, 'rb'))
+    else:
+        da_vect = DomainVectorizer(params)
+        da_vect.fit(data)
+        pickle.dump(da_vect, open(da_path, 'wb'))
     train_indices, val_indices, test_indices = utils.data_split(data)
 
     # train classifier
@@ -152,6 +162,7 @@ def domain_lr(params):
             params['domain_name']: [input_data[params['domain_name']][item] for item in indices],
         }
 
+    print('Training Classifier...')
     input_feats = da_vect.transform(input_data['docs'])
     clf = LogisticRegression(max_iter=2000, n_jobs=-1)
     clf.fit(input_feats, input_data['labels'])
@@ -182,6 +193,7 @@ def domain_lr(params):
             best_valid = report_da
             best_lambda = lambda_item
 
+    print('BEST Valid Performancel: ', best_valid)
     # load test
     print('Loading Test data')
     input_data = {
@@ -200,12 +212,12 @@ def domain_lr(params):
     print('Testing.............................')
     pred_label = clf.predict(input_feats)
     fpr, tpr, _ = metrics.roc_curve(
-        y_true=input_data['labels'], y_score=clf.predict_proba(input_feats),
+        y_true=input_data['labels'], y_score=clf.predict_proba(input_feats)[:, 1],
     )
 
-    with open(params['result_path'], 'w') as wfile:
+    with open(params['result_path'], 'a') as wfile:
         wfile.write('{}...............................\n'.format(datetime.datetime.now()))
-        wfile.write('Performance Evaluation\n')
+        wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
         wfile.write('F1-weighted score: {}\n'.format(
             metrics.f1_score(y_true=input_data['labels'], y_pred=pred_label, average='weighted')
         ))
@@ -247,18 +259,18 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
-        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
-        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
-        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
-        ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
-        ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
-        ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
-        ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
-        ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
+        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        # ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        # ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        # ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],
+        # ['hatespeech_twitter_spanish', hate_speech_dir + 'Spanish/corpus.tsv', 'spanish'],
+        # ['hatespeech_twitter_italian', hate_speech_dir + 'Italian/corpus.tsv', 'italian'],
+        # ['hatespeech_twitter_portuguese', hate_speech_dir + 'Portuguese/corpus.tsv', 'portuguese'],
+        ['hatespeech_twitter_polish', hate_speech_dir + 'Polish/corpus.tsv', 'polish'],
     ]
 
-    for data_entry in data_list:
+    for data_entry in tqdm(data_list):
         print('Working on: ', data_entry)
 
         parameters = {

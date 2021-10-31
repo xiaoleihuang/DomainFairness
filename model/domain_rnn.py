@@ -25,7 +25,7 @@ class DomainRNN(nn.Module):
             )
         else:
             self.wemb = nn.Embedding(
-                self.params['user_size'], self.params['emb_dim']
+                self.params['max_feature'], self.params['emb_dim']
             )
             self.wemb.reset_parameters()
             nn.init.kaiming_uniform_(self.wemb.weight, a=np.sqrt(5))
@@ -107,7 +107,7 @@ def domain_rnn(params):
     data_encoder = utils.DataEncoder(params)
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
-    
+
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
         'docs': [data['docs'][item] for item in train_indices],
@@ -258,9 +258,9 @@ def domain_rnn(params):
                 y_probs.extend([item[1] for item in logits])
                 y_domains.extend(input_domains.detach().cpu().numpy())
 
-            with open(params['result_path'], 'w') as wfile:
+            with open(params['result_path'], 'a') as wfile:
                 wfile.write('{}...............................\n'.format(datetime.datetime.now()))
-                wfile.write('Performance Evaluation\n')
+                wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
                 wfile.write('F1-weighted score: {}\n'.format(
                     metrics.f1_score(y_true=y_trues, y_pred=y_preds, average='weighted')
                 ))

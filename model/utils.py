@@ -32,10 +32,17 @@ def data_loader(dpath, domain_name='gender', filter_null=True, lang='english'):
         cols = dfile.readline().strip().split('\t')
         doc_idx = cols.index('text')
         domain_idx = cols.index(domain_name)
+        print(domain_idx)
         label_idx = cols.index('label')
 
-        for line in dfile:
+        for idx, line in enumerate(dfile):
             line = line.strip().lower().split('\t')
+            if len(line) != len(cols):
+                continue
+            if len(line[doc_idx].strip().split()) < 10:
+                continue
+
+            # print(idx, line)
             if filter_null and line[domain_idx] == 'x':
                 continue
 
@@ -85,9 +92,9 @@ class TorchDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.domain_name in self.dataset:
-            return self.dataset['docs'][idx], self.dataset['labels'], self.dataset[self.domain_name][idx]
+            return self.dataset['docs'][idx], self.dataset['labels'][idx], self.dataset[self.domain_name][idx]
         else:
-            return self.dataset['docs'][idx], self.dataset['labels'], -1
+            return self.dataset['docs'][idx], self.dataset['labels'][idx], -1
 
 
 def data_split(data):
@@ -219,7 +226,7 @@ class DataEncoder(object):
         self.params = params
         self.mtype = mtype
         if self.mtype == 'rnn':
-            self.tok = pickle.loads(self.params['tok_path'])
+            self.tok = pickle.load(open(self.params['tok_path'], 'rb'))
         elif self.mtype == 'bert':
             self.tok = BertTokenizer.from_pretrained(params['bert_name'])
         else:
@@ -248,7 +255,7 @@ class DataEncoder(object):
             # padding and tokenize
             docs = self.tok.texts_to_sequences(docs)
             docs = pad_sequences(docs)
-            docs = torch.Tensor(docs)
+            docs = torch.Tensor(docs).long()
         else:
-            docs = torch.stack(docs)
+            docs = torch.stack(docs).long()
         return docs, labels, domains
