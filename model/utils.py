@@ -32,7 +32,6 @@ def data_loader(dpath, domain_name='gender', filter_null=True, lang='english'):
         cols = dfile.readline().strip().split('\t')
         doc_idx = cols.index('text')
         domain_idx = cols.index(domain_name)
-        print(domain_idx)
         label_idx = cols.index('label')
 
         for idx, line in enumerate(dfile):
@@ -226,7 +225,8 @@ class DataEncoder(object):
         self.params = params
         self.mtype = mtype
         if self.mtype == 'rnn':
-            self.tok = pickle.load(open(self.params['tok_path'], 'rb'))
+            self.tok = pickle.load(open(
+                os.path.join(params['model_dir'], params['dname'] + '.tok'), 'rb'))
         elif self.mtype == 'bert':
             self.tok = BertTokenizer.from_pretrained(params['bert_name'])
         else:

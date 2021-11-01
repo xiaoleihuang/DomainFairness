@@ -75,8 +75,7 @@ class DomainRNN(nn.Module):
             for domain in self.doc_net_domain:
                 domain_mask = torch.Tensor(
                     [1 if int(domain.split('_')[1]) == item else 0 for item in input_domains],
-                    device=self.params['device']
-                )
+                ).to(self.params['device'])
                 _, doc_domain = self.doc_net_domain[domain](doc_embs)  # omit hidden vectors
                 # concatenate hidden state
                 if self.params['bidirectional']:
@@ -104,11 +103,19 @@ def domain_rnn(params):
     params['device'] = device
 
     # load data
-    data_encoder = utils.DataEncoder(params)
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
 
+    # build tokenizer and weight
+    tok = utils.build_tok(
+        data['docs'], max_feature=params['max_feature'],
+        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
+    )
+    if not os.path.exists(params['word_emb_path']):
+        utils.build_wt(tok, params['emb_path'], params['emb_dim'], params['word_emb_path'])
+
     train_indices, val_indices, test_indices = utils.data_split(data)
+    data_encoder = utils.DataEncoder(params)
     train_data = {
         'docs': [data['docs'][item] for item in train_indices],
         'labels': [data['labels'][item] for item in train_indices],
@@ -133,14 +140,6 @@ def domain_rnn(params):
             'labels': [train_data['labels'][item] for item in sample_indices],
             params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
         }
-
-    # build tokenizer and weight
-    tok = utils.build_tok(
-        data['docs'], max_feature=params['max_feature'],
-        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
-    )
-    if not os.path.exists(params['word_emb_path']):
-        utils.build_wt(tok, params['emb_path'], params['emb_dim'], params['word_emb_path'])
 
     # too large data to fit memory, remove some
     # training data size: 200000
@@ -290,6 +289,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, help='Learning rate', default=.0001)
     parser.add_argument('--batch_size', type=int, help='Batch size', default=16)
     parser.add_argument('--max_len', type=int, help='Max length', default=512)
+    parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
 
     review_dir = '../data/review/'
@@ -344,7 +344,7 @@ if __name__ == '__main__':
             'max_len': args.max_len,
             'dp_rate': .2,
             'optimizer': 'rmsprop',
-            'emb_path': '/data/models/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
+            'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'emb_dim': 200,
             'word_emb_path': os.path.join(model_dir, data_entry[0] + '.npy'),
             'unique_domains': [],
