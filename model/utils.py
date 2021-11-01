@@ -249,8 +249,8 @@ class DataEncoder(object):
             labels.append(label)
             domains.append(domain)
 
-        labels = torch.tensor(labels, dtype=torch.float)
-        domains = torch.tensor(domains)
+        labels = torch.tensor(labels, dtype=torch.long)
+        domains = torch.tensor(domains, dtype=torch.long)
         if self.mtype == 'rnn':
             # padding and tokenize
             docs = self.tok.texts_to_sequences(docs)

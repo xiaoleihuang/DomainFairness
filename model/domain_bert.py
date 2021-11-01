@@ -66,15 +66,17 @@ class DomainBERT(nn.Module):
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
                 doc_domain = self.dropout(torch.relu(doc_domain))
 
-                doc_general = torch.hstack((doc_general, doc_domain))
+                doc_general = torch.cat((doc_general, doc_domain), dim=-1)
         else:
             # because domain encoder share the same shape with the general domain
             tensor_shape = doc_general.shape
             for _ in self.doc_net_domain:
-                doc_general = torch.hstack((doc_general, torch.zeros(tensor_shape[0], tensor_shape[1])))
+                doc_general = torch.cat((doc_general, torch.zeros(tensor_shape[0], tensor_shape[1])), dim=-1)
             doc_general *= self.lambda_v
 
         # prediction
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
         doc_preds = self.predictor(doc_general)
         return doc_preds
 

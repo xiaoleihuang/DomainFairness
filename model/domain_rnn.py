@@ -50,7 +50,8 @@ class DomainRNN(nn.Module):
             )
 
         # prediction
-        self.predictor = nn.Linear(self.word_hidden_size * 3, self.params['num_label'])
+        self.predictor = nn.Linear(
+            self.params['emb_dim'] * (1+len(self.params['unique_domains'])), self.params['num_label'])
 
         # mode setting
         self.mode = 'train'
@@ -82,14 +83,23 @@ class DomainRNN(nn.Module):
                     doc_domain = torch.cat((doc_domain[0, :, :], doc_domain[1, :, :]), -1)
                 # mask out features if domains do not match
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
-                doc_general = torch.hstack((doc_general, doc_domain))
+                doc_general = torch.cat((doc_general, doc_domain), dim=-1)
         else:
             # because domain encoder share the same shape with the general domain
             tensor_shape = doc_general.shape
-            for _ in self.doc_net_domain:
-                doc_general = torch.hstack((doc_general, torch.zeros(tensor_shape[0], tensor_shape[1])))
+            doc_general = torch.cat(
+                (
+                    doc_general,
+                    torch.zeros(
+                        tensor_shape[0],
+                        tensor_shape[1]*len(self.params['unique_domains'])
+                    ).to(self.params['device'])
+                ), dim=-1
+            )
             doc_general *= self.lambda_v
 
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
         # prediction
         doc_preds = self.predictor(doc_general)
         return doc_preds
@@ -197,11 +207,14 @@ def domain_rnn(params):
             loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
             for domain in params['unique_domains']:
                 domain_kl = kl_loss(
-                    rnn_model.doc_net_general.weight,
-                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight
+                    rnn_model.doc_net_general.weight_ih_l0,
+                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_ih_l0
+                ) + kl_loss(
+                    rnn_model.doc_net_general.weight_hh_l0,
+                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_hh_l0
                 )
                 domain_kl = params['kl_score'] * domain_kl
-                loss += domain_kl
+                #loss += domain_kl
             train_loss += loss.item()
 
             loss_avg = train_loss / (step + 1)
