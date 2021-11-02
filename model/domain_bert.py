@@ -32,7 +32,7 @@ class DomainBERT(nn.Module):
                 self.bert_model.config.hidden_size, self.params['emb_dim'])
 
         # prediction
-        self.predictor = nn.Linear(self.word_hidden_size * 3, self.params['num_label'])
+        self.predictor = nn.Linear(self.params['emb_dim'] * 3, self.params['num_label'])
 
         # mode setting
         self.mode = 'train'
@@ -46,7 +46,7 @@ class DomainBERT(nn.Module):
 
     def forward(self, input_docs, input_domains=None):
         # encode the document from different perspectives
-        doc_embs = self.self.bert_model(
+        doc_embs = self.bert_model(
             input_docs, token_type_ids=None,
             attention_mask=None
         )
@@ -58,9 +58,7 @@ class DomainBERT(nn.Module):
         if self.mode == 'train':
             for domain in self.doc_net_domain:
                 domain_mask = torch.Tensor(
-                    [1 if int(domain.split('_')[1]) == item else 0 for item in input_domains],
-                    device=self.params['device']
-                )
+                    [1 if int(domain.split('_')[1]) == item else 0 for item in input_domains]).to(self.params['device'])
                 doc_domain = self.doc_net_domain[domain](doc_embs)
                 # mask out features if domains do not match
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
@@ -71,7 +69,7 @@ class DomainBERT(nn.Module):
             # because domain encoder share the same shape with the general domain
             tensor_shape = doc_general.shape
             for _ in self.doc_net_domain:
-                doc_general = torch.cat((doc_general, torch.zeros(tensor_shape[0], tensor_shape[1])), dim=-1)
+                doc_general = torch.cat((doc_general, torch.zeros(tensor_shape[0], tensor_shape[1]).to(self.params['device'])), dim=-1)
             doc_general *= self.lambda_v
 
         # prediction
@@ -89,7 +87,7 @@ def domain_bert(params):
     params['device'] = device
 
     # load data
-    data_encoder = utils.DataEncoder(params)
+    data_encoder = utils.DataEncoder(params, mtype='bert')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
 
@@ -118,14 +116,6 @@ def domain_bert(params):
             'labels': [train_data['labels'][item] for item in sample_indices],
             params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
         }
-
-    # build tokenizer and weight
-    tok = utils.build_tok(
-        data['docs'], max_feature=params['max_feature'],
-        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
-    )
-    if not os.path.exists(params['word_emb_path']):
-        utils.build_wt(tok, params['emb_path'], params['emb_dim'], params['word_emb_path'])
 
     # too large data to fit memory, remove some
     # training data size: 200000
@@ -158,10 +148,13 @@ def domain_bert(params):
 
     # build model
     bert_model = DomainBERT(params)
+    bert_model.change_lambda(params['lambda_v'])
     bert_model = bert_model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
-    kl_loss = nn.KLDivLoss().to(device)
-    optimizer = torch.optim.RMSprop(bert_model.parameters(), lr=params['lr'])
+    # kl_loss = nn.KLDivLoss().to(device)
+    #param_optimizer = list(bert_model.named_parameters())
+    # no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer = torch.optim.Adam(bert_model.parameters(), lr=params['lr'])
 
     # train the networks
     print('Start to train...')
@@ -182,10 +175,14 @@ def domain_bert(params):
             })
             loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
             for domain in params['unique_domains']:
-                domain_kl = kl_loss(
-                    bert_model.doc_net_general.weight,
-                    bert_model.doc_net_domain['domain_{}'.format(domain)].weight
-                )
+                domain_kl = torch.mean(torch.abs(
+                    torch.cumsum(bert_model.doc_net_general.weight, dim=-1) -\
+                    torch.cumsum(
+                        bert_model.doc_net_domain[
+                            'domain_{}'.format(domain)].weight, dim=-1
+                    )
+                ))
+                # print(domain_kl)
                 domain_kl = params['kl_score'] * domain_kl
                 loss += domain_kl
             train_loss += loss.item()
@@ -212,7 +209,7 @@ def domain_bert(params):
                     'input_docs': input_docs,
                     'input_domains': input_domains
                 })
-            logits = predictions[0].detach().cpu().numpy()
+            logits = predictions.detach().cpu().numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
@@ -236,7 +233,7 @@ def domain_bert(params):
                         'input_docs': input_docs,
                         'input_domains': input_domains
                     })
-                logits = predictions[0].detach().cpu().numpy()
+                logits = predictions.detach().cpu().numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())
@@ -275,6 +272,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, help='Learning rate', default=.0001)
     parser.add_argument('--batch_size', type=int, help='Batch size', default=16)
     parser.add_argument('--max_len', type=int, help='Max length', default=512)
+    parser.add_argument('--lambdaV', type=float, help='lambda_v', default=1)
+    parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
 
     review_dir = '../data/review/'
@@ -335,7 +334,8 @@ if __name__ == '__main__':
             'bidirectional': False,
             'device': args.device,
             'num_label': 2,
-            'kl_score': 0.001
+            'kl_score': 0.01,
+            'lambda_v': args.lambdaV
         }
 
         # adjust parameters for other languages

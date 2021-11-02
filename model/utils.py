@@ -173,32 +173,43 @@ def fair_eval(true_labels, pred_labels, domain_labels):
     return json.dumps(scores)
 
 
-def build_wt(tkn, emb_path, size, opath):
+def build_wt(tkn, emb_path, opath):
     """Build weight using word embedding"""
     embed_len = len(tkn.word_index)
     if embed_len > tkn.num_words:
         embed_len = tkn.num_words
 
-    emb_matrix = np.zeros((embed_len + 1, size))
+    emb_size = 200
     if emb_path.endswith('.bin'):
         embeds = gensim.models.KeyedVectors.load_word2vec_format(
             emb_path, binary=True, unicode_errors='ignore'
         )
+        emb_size = embeds.vector_size
+        emb_matrix = list(np.zeros((embed_len + 1, emb_size)))
         for pair in zip(embeds.wv.index2word, embeds.wv.syn0):
             if pair[0] in tkn.word_index and \
                     tkn.word_index[pair[0]] < tkn.num_words:
-                emb_matrix[tkn.word_index[pair[0]]] = [
+                emb_matrix[tkn.word_index[pair[0]]] = np.asarray([
                     float(item) for item in pair[1]
-                ]
+                ], dtype=np.float32)
     else:
+        dfile = open(emb_path)
+        line = dfile.readline().strip().split()
+        if len(line) < 5:
+            line = dfile.readline().strip().split()
+        emb_size = len(line[1:])
+        emb_matrix = list(np.zeros((embed_len + 1, emb_size)))
+        dfile.close()
+
         with open(emb_path) as dfile:
             for line in dfile:
                 line = line.strip().split()
                 if line[0] in tkn.word_index and \
                         tkn.word_index[line[0]] < tkn.num_words:
-                    emb_matrix[tkn.word_index[line[0]]] = [
+                    emb_matrix[tkn.word_index[line[0]]] = np.asarray([
                         float(item) for item in line[1:]
-                    ]
+                    ], dtype=np.float32)
+    # emb_matrix = np.array(emb_matrix, dtype=np.float32)
     np.save(opath, emb_matrix)
 
 

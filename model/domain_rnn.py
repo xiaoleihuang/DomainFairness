@@ -21,7 +21,8 @@ class DomainRNN(nn.Module):
 
         if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
             self.wemb = nn.Embedding.from_pretrained(
-                torch.FloatTensor(np.load(self.params['word_emb_path']))
+                torch.FloatTensor(np.load(
+                    self.params['word_emb_path'], allow_pickle=True))
             )
         else:
             self.wemb = nn.Embedding(
@@ -37,14 +38,14 @@ class DomainRNN(nn.Module):
 
         # domain adaptation
         self.doc_net_general = nn.GRU(
-            self.params['emb_dim'], self.word_hidden_size,
+            self.wemb.embedding_dim, self.word_hidden_size,
             bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
             batch_first=True
         )
         self.doc_net_domain = nn.ModuleDict()
         for domain in self.params['unique_domains']:
             self.doc_net_domain['domain_{}'.format(domain)] = nn.GRU(
-                self.params['emb_dim'], self.word_hidden_size,
+                self.wemb.embedding_dim, self.word_hidden_size,
                 bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
                 batch_first=True
             )
@@ -67,9 +68,13 @@ class DomainRNN(nn.Module):
         # encode the document from different perspectives
         doc_embs = self.wemb(input_docs)
         _, doc_general = self.doc_net_general(doc_embs)  # omit hidden vectors
+
         # concatenate hidden state
         if self.params['bidirectional']:
             doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
+
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
 
         # mask out unnecessary features
         if self.mode == 'train':
@@ -81,6 +86,8 @@ class DomainRNN(nn.Module):
                 # concatenate hidden state
                 if self.params['bidirectional']:
                     doc_domain = torch.cat((doc_domain[0, :, :], doc_domain[1, :, :]), -1)
+                if doc_domain.shape[0] == 1:
+                    doc_domain = doc_domain.squeeze(dim=0)
                 # mask out features if domains do not match
                 doc_domain = torch.mul(doc_domain, domain_mask[:, None])
                 doc_general = torch.cat((doc_general, doc_domain), dim=-1)
@@ -98,8 +105,6 @@ class DomainRNN(nn.Module):
             )
             doc_general *= self.lambda_v
 
-        if doc_general.shape[0] == 1:
-            doc_general = doc_general.squeeze(dim=0)
         # prediction
         doc_preds = self.predictor(doc_general)
         return doc_preds
@@ -122,7 +127,7 @@ def domain_rnn(params):
         opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
     )
     if not os.path.exists(params['word_emb_path']):
-        utils.build_wt(tok, params['emb_path'], params['emb_dim'], params['word_emb_path'])
+        utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     data_encoder = utils.DataEncoder(params)
@@ -184,7 +189,7 @@ def domain_rnn(params):
     rnn_model = DomainRNN(params)
     rnn_model = rnn_model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
-    kl_loss = nn.KLDivLoss().to(device)
+    kl_loss = nn.KLDivLoss(reduction='batchmean').to(device)
     optimizer = torch.optim.RMSprop(rnn_model.parameters(), lr=params['lr'])
 
     # train the networks
@@ -206,15 +211,15 @@ def domain_rnn(params):
             })
             loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
             for domain in params['unique_domains']:
-                domain_kl = kl_loss(
-                    rnn_model.doc_net_general.weight_ih_l0,
-                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_ih_l0
-                ) + kl_loss(
-                    rnn_model.doc_net_general.weight_hh_l0,
-                    rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_hh_l0
-                )
+                domain_kl = torch.mean(torch.abs(
+                    rnn_model.doc_net_general.weight_ih_l0 - rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_ih_l0
+                ))
+                domain_kl += torch.mean(torch.abs(
+                    rnn_model.doc_net_general.weight_hh_l0 - rnn_model.doc_net_domain['domain_{}'.format(domain)].weight_hh_l0
+                ))
                 domain_kl = params['kl_score'] * domain_kl
-                #loss += domain_kl
+                # print(domain_kl)
+                loss += domain_kl
             train_loss += loss.item()
 
             loss_avg = train_loss / (step + 1)
@@ -239,7 +244,7 @@ def domain_rnn(params):
                     'input_docs': input_docs,
                     'input_domains': input_domains
                 })
-            logits = predictions[0].detach().cpu().numpy()
+            logits = predictions.detach().cpu().numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
@@ -263,7 +268,7 @@ def domain_rnn(params):
                         'input_docs': input_docs,
                         'input_domains': input_domains
                     })
-                logits = predictions[0].detach().cpu().numpy()
+                logits = predictions.detach().cpu().numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())
@@ -280,8 +285,11 @@ def domain_rnn(params):
                 wfile.write('AUC score: {}\n'.format(
                     metrics.auc(fpr, tpr)
                 ))
-                wfile.write(metrics.classification_report(
-                    y_true=y_trues, y_pred=y_preds, digits=3) + '\n')
+                report = metrics.classification_report(
+                    y_true=y_trues, y_pred=y_preds, digits=3
+                )
+                print(report)
+                wfile.write(report)
                 wfile.write('\n')
 
                 wfile.write('Fairness Evaluation\n')
@@ -322,7 +330,7 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
         ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
         ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
         ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
@@ -351,7 +359,7 @@ if __name__ == '__main__':
             'use_large': False,
             'domain_name': 'gender',
             'over_sample': False,
-            'epochs': 10,
+            'epochs': 20,
             'batch_size': args.batch_size,
             'lr': args.lr,
             'max_len': args.max_len,
@@ -364,7 +372,7 @@ if __name__ == '__main__':
             'bidirectional': False,
             'device': args.device,
             'num_label': 2,
-            'kl_score': 0.001
+            'kl_score': 0.01
         }
-
+        print(parameters)
         domain_rnn(parameters)
