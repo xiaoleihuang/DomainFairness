@@ -11,12 +11,13 @@ from sklearn import metrics
 from tqdm import tqdm
 from nltk.corpus import stopwords
 import nltk
-nltk.download('stopwords')
 from scipy.sparse import lil_matrix, csc_matrix, hstack
 import numpy as np
 from imblearn.over_sampling import RandomOverSampler
 
 import utils
+
+nltk.download('stopwords')
 
 
 def da_tokenizer(text):
@@ -56,7 +57,7 @@ class DomainVectorizer(TransformerMixin):
                 )
                 new_docs = [
                     item for idx, item in enumerate(dataset['docs'])
-                        if dataset[self.params['domain_name']][idx] == key]
+                    if dataset[self.params['domain_name']][idx] == key]
                 self.tfidf_vec_da[key].fit(new_docs)
             self.tfidf_vec_da["general"] = TfidfVectorizer(
                 ngram_range=(1, 3), min_df=2, max_features=self.params['max_feature'],
@@ -78,7 +79,7 @@ class DomainVectorizer(TransformerMixin):
                 pickle.dump(tmp_vect, open(self.tfidf_vec_da[key], 'wb'))
 
             tmp_vect = TfidfVectorizer(
-                min_df=3,  max_features=self.params['max_feature'],
+                min_df=3, max_features=self.params['max_feature'],
                 stop_words=spw_set, max_df=0.9, ngram_range=(1, 3),
             )
             self.tfidf_vec_da["general"] = os.path.join(self.params['model_dir'], 'general.pkl')
@@ -124,7 +125,7 @@ def domain_lr(params):
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     print('Building Domain Vectorizer...')
 
-    da_path = os.path.join(params['model_dir'], params['dname']+'-da_vect.pkl')
+    da_path = os.path.join(params['model_dir'], params['dname'] + '-da_vect.pkl')
     if os.path.exists(da_path):
         da_vect = pickle.load(open(da_path, 'rb'))
     else:
@@ -234,7 +235,7 @@ def domain_lr(params):
                 true_labels=input_data['labels'],
                 pred_labels=pred_label,
                 domain_labels=input_data[params['domain_name']]
-            )+'\n'
+            ) + '\n'
         )
 
         wfile.write('...............................\n\n')
@@ -274,7 +275,7 @@ if __name__ == '__main__':
         print('Working on: ', data_entry)
 
         parameters = {
-            'result_path': os.path.join(result_dir, os.path.basename(__file__)+'.txt'),
+            'result_path': os.path.join(result_dir, os.path.basename(__file__) + '.txt'),
             'model_dir': model_dir,
             'dname': data_entry[0],
             'dpath': data_entry[1],

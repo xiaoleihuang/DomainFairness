@@ -3,180 +3,128 @@
 import pickle
 import os
 import numpy as np
-from sklearn.metrics import f1_score
+from sklearn import metrics
+from imblearn.over_sampling import RandomOverSampler
 
-from keras.layers import Input, Embedding
-from keras.layers import Bidirectional, GRU
-from keras.layers import Dense
-from keras.models import Model
+import torch
 
 import utils
 
 
 def build_model(params):
-    clf_path = './clf/gru.' + params['tname']
-    result_path = './results/gru.' + params['tname']
+    print('Loading Data...')
+    data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
+    train_indices, val_indices, test_indices = utils.data_split(data)
 
-    if not os.path.exists(clf_path):
-        if params['num_cl'] > 2:
-            pred_func = 'softmax'
-            loss_func = 'categorical_crossentropy'
-        else:
-            pred_func = 'sigmoid'
-            loss_func = 'binary_crossentropy'
+    # load train
+    input_data = {
+        'docs': [data['docs'][item] for item in train_indices],
+        'labels': [data['labels'][item] for item in train_indices],
+    }
+    if params['over_sample']:
+        ros = RandomOverSampler(random_state=33)
+        sample_indices = list(range(len(input_data['docs'])))
+        sample_indices, _ = ros.fit_resample(sample_indices, input_data['labels'])
+        input_data = {
+            'docs': [input_data['docs'][item] for item in sample_indices],
+            'labels': [input_data['labels'][item] for item in sample_indices],
+        }
 
-        # load embedding matrix
-        wt_matrix = utils.build_wt(params['emb_file'], opt='embd_unbias.npy')
+    # too large data to fit memory, remove some
+    # training data size: 200000
+    if len(input_data['docs']) > 200000:
+        np.random.seed(33)
+        indices = list(range(len(input_data['docs'])))
+        np.random.shuffle(indices)
+        indices = indices[:200000]
+        input_data = {
+            'docs': [input_data['docs'][item] for item in indices],
+            'labels': [input_data['labels'][item] for item in indices],
+        }
 
-        # define the GRU model
-        text_input = Input(
-            shape=(params['seq_max_len'],), dtype='int32', name='input'
-        )
-        embeds = Embedding(
-            wt_matrix.shape[0], wt_matrix.shape[1],
-            weights=[wt_matrix], input_length=params['seq_max_len'],
-            trainable=True, name='embedding'
-        )(text_input)
-        bigru = Bidirectional(GRU(
-            params['rnn_size'], kernel_initializer="glorot_uniform"
-        ))(embeds)
+    # load valid
 
-        predicts = Dense(
-            params['num_cl'], activation=pred_func, name='predict'
-        )(bigru)
+    # load test
+    print('Loading Test data')
+    test_data = {
+        'docs': [data['docs'][item] for item in test_indices],
+        'labels': [data['labels'][item] for item in test_indices],
+        params['domain_name']: [input_data[params['domain_name']][item] for item in test_indices],
+    }
 
-        model = Model(inputs=text_input, outputs=predicts)
-        model.compile(
-            loss=loss_func, optimizer=params['opt'],
-            metrics=['accuracy']
-        )
-        print(model.summary())
+    print('Testing.............................')
+    input_feats = lr_vect.transform_test(input_data['docs'])
+    pred_label = clf.predict(input_feats)
+    fpr, tpr, _ = metrics.roc_curve(
+        y_true=input_data['labels'], y_score=clf.predict_proba(input_feats)[:, 1],
+    )
 
-        # create indices of documents, 
-        # because other models will overwrite the current indices
-        utils.build_indices(params['tname'])
+    with open(params['result_path'], 'a') as wfile:
+        wfile.write('{}...............................\n'.format(datetime.datetime.now()))
+        wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
+        wfile.write('F1-weighted score: {}\n'.format(
+            metrics.f1_score(y_true=input_data['labels'], y_pred=pred_label, average='weighted')
+        ))
+        wfile.write('AUC score: {}\n'.format(
+            metrics.auc(fpr, tpr)
+        ))
+        wfile.write(metrics.classification_report(
+            y_true=input_data['labels'], y_pred=pred_label, digits=3) + '\n')
+        wfile.write('\n')
 
-        best_valid_f1 = 0.0
-
-        for e in range(params['epochs']):
-            accuracy = 0.0
-            loss = 0.0
-            step = 1
-
-            print('--------------Epoch: {}--------------'.format(e))
-
-            # load the datasets
-            train_iter = utils.data_iter(
-                params['tname'], suffix='train',
-                batch_size=params['batch_size']
-            )
-
-            # train the model
-            for _, x_train, y_train in train_iter:
-                if len(np.unique(y_train)) == 1:
-                    continue
-
-                tmp = model.train_on_batch(
-                    [x_train], y_train,
-                    class_weight=params['class_wt']
-                )
-
-                loss += tmp[0]
-                loss_avg = loss / step
-                accuracy += tmp[1]
-                accuracy_avg = accuracy / step
-                if step % 30 == 0:
-                    print('Step: {}'.format(step))
-                    print('\tLoss: {}. Accuracy: {}'.format(loss_avg, accuracy_avg))
-                    print('-------------------------------------------------')
-                step += 1
-
-            # valid the model
-            print('---------------------------Validation------------------------------')
-            valid_iter = utils.data_iter(
-                params['tname'], suffix='valid',
-                batch_size=params['batch_size']
-            )
-
-            y_preds = []
-            y_valids = []
-
-            for _, x_valid, y_valid in valid_iter:
-                tmp_preds = model.predict([x_valid])
-
-                for item_tmp in tmp_preds:
-                    y_preds.append(round(item_tmp[0]))
-                y_valids.extend(y_valid)
-
-            valid_f1 = f1_score(y_true=y_valids, y_pred=y_preds, average='weighted')
-            print('Validating f1-weighted score: ' + str(valid_f1))
-
-            if best_valid_f1 < valid_f1:
-                best_valid_f1 = valid_f1
-                pickle.dump(model, open(clf_path, 'wb'))
-
-    print('------------------------------Test---------------------------------')
-    if not os.path.exists(result_path):
-        y_preds_test = []
-        y_preds_prob = []
-
-        test_iter = utils.data_iter(
-            params['tname'], suffix='test',
-            batch_size=params['batch_size']
+        wfile.write('Fairness Evaluation\n')
+        wfile.write(
+            utils.fair_eval(
+                true_labels=input_data['labels'],
+                pred_labels=pred_label,
+                domain_labels=input_data[params['domain_name']]
+            ) + '\n'
         )
 
-        best_model = pickle.load(open(clf_path, 'rb'))
-
-        data = []
-        for data_batch, x_test, y_test in test_iter:
-            tmp_preds = best_model.predict([x_test])
-            data.extend(data_batch)
-            for item_tmp in tmp_preds:
-                y_preds_prob.append(item_tmp[0])
-                y_preds_test.append(int(round(item_tmp[0])))
-
-        assert len(y_preds_test) == len(data)
-
-        with open(result_path, 'w') as wfile:
-            wfile.write(
-                '\t'.join([
-                    'tid', 'uid', 'text', 'date', 'gender',
-                    'age', 'region', 'country', 'ethnicity', 'ethMulti', 'label', 'pred', 'pred_prob'
-                ]) + '\n'
-            )
-            for idx, label in enumerate(y_preds_test):
-                data[idx].append(str(y_preds_test[idx]))
-                data[idx].append(str(y_preds_prob[idx]))
-
-                wfile.write('\t'.join(data[idx]) + '\n')
-    utils.fair_eval(result_path)
+        wfile.write('...............................\n\n')
+        wfile.flush()
 
 
 if __name__ == '__main__':
-    # gender
-    parameters = {
-        'tname': 'ethMulti', 'seq_max_len': 30, 'dp_rate': 0.3, 'opt': 'rmsprop', 'epochs': 10,
-        'class_wt': {1: 3, 0: 1}, 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
-        'emb_file': '../embeddings/GoogleNews-vectors-negative300.bin'
-    }
-    #    # gender
-    #    build_model(params)
+    review_dir = '../data/review/'
+    hate_speech_dir = '../data/hatespeech/'
+    model_dir = '../resources/model/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    model_dir = model_dir + os.path.basename(__file__) + '/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    result_dir = '../resources/results/'
+    if not os.path.exists(result_dir):
+        os.mkdir(result_dir)
 
-    #    # ethnicity
-    #    params['tname'] = 'ethnicity'
-    #    build_model(params)
+    data_list = [
+        # ['review_amazon_english', review_dir + 'amazon/amazon.tsv', 'english'],
+        # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
+        # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
+        # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
+        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],
+        ['hatespeech_twitter_spanish', hate_speech_dir + 'Spanish/corpus.tsv', 'spanish'],
+        ['hatespeech_twitter_italian', hate_speech_dir + 'Italian/corpus.tsv', 'italian'],
+        ['hatespeech_twitter_portuguese', hate_speech_dir + 'Portuguese/corpus.tsv', 'portuguese'],
+        ['hatespeech_twitter_polish', hate_speech_dir + 'Polish/corpus.tsv', 'polish'],
+    ]
 
-    #    # age
-    #    params['tname'] = 'age'
-    #    build_model(params)
+    for data_entry in tqdm(data_list):
+        print('Working on: ', data_entry)
 
-    #    # country
-    #    params['tname'] = 'country'
-    #    build_model(params)
+        parameters = {
+            'result_path': os.path.join(result_dir, os.path.basename(__file__) + '.txt'),
+            'model_dir': model_dir,
+            'dname': data_entry[0],
+            'dpath': data_entry[1],
+            'lang': data_entry[2],
+            'max_feature': 10000,
+            'over_sample': False,
+        }
 
-    #    # region
-    #    params['tname'] = 'region'
-    #    build_model(params)
-
-    # ethnicity-multi
-    build_model(parameters)
+        build_model(parameters)

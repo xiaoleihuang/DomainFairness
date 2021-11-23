@@ -1,174 +1,158 @@
 """measure performance variations across different groups"""
 
 import os
-import json
 import pickle
-
-# from gensim.corpora import Dictionary
-# from gensim.models import LdaModel
+import datetime
+from tqdm import tqdm
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn import metrics
+from nltk.corpus import stopwords
+import nltk
+from imblearn.over_sampling import RandomOverSampler
+import numpy as np
 
 import utils
+nltk.download('stopwords')
 
 
-def self_tokenizer(text):
-    return text.split()
-
-
-def build_lr(task_dic):
+def build_lr(params):
     """Obtain Test Results of prediction
     """
-    doc_idx = 2
-    result_path = './results/lr.' + task_dic['name']
-    clf_path = './clf/lr.' + task_dic['name']
-    vect_path = './vect/lr.' + task_dic['name']
-
-    # pos features
-    docs_pos = {}
-    with open('../analysis/overlaps/pos/data_tags.tsv') as dfile:
-        dfile.readline()
-        for line in dfile:
-            line = line.strip().split('\t')
-            doc = json.loads(line[doc_idx])
-            docs_pos[line[0]] = ' '.join([item[1] for item in doc])
-
-    # topic features
-    # dictp = '../analysis/overlaps/topic/twitter.dict'
-    # tmodelp = '../analysis/overlaps/topic/twitter.model'
-    # lda_dict = Dictionary.load(dictp)
-    # lda = LdaModel.load(tmodelp)
+    print('Loading Data...')
+    data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
+    print('Building Domain Vectorizer...')
 
     # build vectorizer
-    print('Building vectorizer....', task_dic['name'])
-    if os.path.exists(vect_path + '1'):
-        vect = pickle.load(
-            open(vect_path, 'rb')
-        )
+    vect_path = os.path.join(params['model_dir'], params['dname'] + '-lr_vect.pkl')
+    if os.path.exists(vect_path):
+        lr_vect = pickle.load(open(vect_path, 'rb'))
     else:
-        vect = []
-        docs = []
-        with open(task_dic['datap']) as dfile:
-            cols = dfile.readline().split('\t')
-            idx = cols.index(task_dic['name'])
+        try:
+            spw_set = set(stopwords.words(params['lang']))
+        except OSError:
+            spw_set = None
+        lr_vect = TfidfVectorizer(
+            min_df=3,  max_features=params['max_feature'],
+            stop_words=spw_set, max_df=0.9, ngram_range=(1, 3),
+        )
+        lr_vect.fit(data)
+        pickle.dump(lr_vect, open(vect_path, 'wb'))
+    train_indices, val_indices, test_indices = utils.data_split(data)
 
-            for line in dfile:
-                line = line.strip().split('\t')
-                if line[idx] == 'x':
-                    continue
-                docs.append(line[doc_idx])
+    # train classifier
+    input_data = {
+        'docs': [data['docs'][item] for item in train_indices],
+        'labels': [data['labels'][item] for item in train_indices],
+    }
+    if params['over_sample']:
+        ros = RandomOverSampler(random_state=33)
+        sample_indices = list(range(len(input_data['docs'])))
+        sample_indices, _ = ros.fit_resample(sample_indices, input_data['labels'])
+        input_data = {
+            'docs': [input_data['docs'][item] for item in sample_indices],
+            'labels': [input_data['labels'][item] for item in sample_indices],
+        }
 
-        vect.append(TfidfVectorizer(
-            ngram_range=(1, 2), max_df=0.9,
-            min_df=2, max_features=8000,
-            stop_words=utils.stopwords()
+    # too large data to fit memory, remove some
+    # training data size: 200000
+    if len(input_data['docs']) > 200000:
+        np.random.seed(33)
+        indices = list(range(len(input_data['docs'])))
+        np.random.shuffle(indices)
+        indices = indices[:200000]
+        input_data = {
+            'docs': [input_data['docs'][item] for item in indices],
+            'labels': [input_data['labels'][item] for item in indices],
+        }
+
+    print('Training Classifier...')
+    input_feats = lr_vect.transform(input_data['docs'])
+    clf = LogisticRegression(max_iter=2000, n_jobs=-1)
+    clf.fit(input_feats, input_data['labels'])
+
+    # load test
+    print('Loading Test data')
+    input_data = {
+        'docs': [data['docs'][item] for item in test_indices],
+        'labels': [data['labels'][item] for item in test_indices],
+        params['domain_name']: [input_data[params['domain_name']][item] for item in test_indices],
+    }
+
+    print('Testing.............................')
+    input_feats = lr_vect.transform_test(input_data['docs'])
+    pred_label = clf.predict(input_feats)
+    fpr, tpr, _ = metrics.roc_curve(
+        y_true=input_data['labels'], y_score=clf.predict_proba(input_feats)[:, 1],
+    )
+
+    with open(params['result_path'], 'a') as wfile:
+        wfile.write('{}...............................\n'.format(datetime.datetime.now()))
+        wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
+        wfile.write('F1-weighted score: {}\n'.format(
+            metrics.f1_score(y_true=input_data['labels'], y_pred=pred_label, average='weighted')
         ))
-        vect[0].fit(docs)
+        wfile.write('AUC score: {}\n'.format(
+            metrics.auc(fpr, tpr)
+        ))
+        wfile.write(metrics.classification_report(
+            y_true=input_data['labels'], y_pred=pred_label, digits=3) + '\n')
+        wfile.write('\n')
 
-        pickle.dump(vect, open(vect_path, 'wb'))
-
-    # build classifier
-    print('Building classifier....', task_dic['name'])
-    if os.path.exists(clf_path + '1'):
-        clf = pickle.load(
-            open(clf_path, 'rb')
+        wfile.write('Fairness Evaluation\n')
+        wfile.write(
+            utils.fair_eval(
+                true_labels=input_data['labels'],
+                pred_labels=pred_label,
+                domain_labels=input_data[params['domain_name']]
+            ) + '\n'
         )
-    else:
-        # lda_feas = []
-        with open(task_dic['train']) as dfile:
-            # cols = dfile.readline().split('\t')
-            data = {'x': [], 'x_pos': [], 'y': []}
-            for line in dfile:
-                line = line.strip().split('\t')
-                data['x'].append(line[doc_idx])
-                data['y'].append(int(line[-1]))
-                data['x_pos'].append(docs_pos[line[0]])
 
-        clf = LogisticRegression(class_weight='balanced', solver='liblinear')
-        clf.fit(vect[0].transform(data['x']), data['y'])
-        pickle.dump(clf, open(clf_path, 'wb'))
-
-    # Testing
-    print('Testing...', task_dic['name'])
-    #    if not os.path.exists(result_path):
-    docs = []
-    test_pos = []
-    # lda_feas = []
-    with open(task_dic['test']) as dfile:
-        dfile.readline()
-
-        for line in dfile:
-            line = line.strip().split('\t')
-            docs.append(line[doc_idx])
-            test_pos.append(docs_pos[line[0]])
-
-    docs = vect[0].transform(docs)
-    y_pred = clf.predict(docs)
-    y_prob = clf.predict_proba(docs)
-
-    with open(task_dic['test']) as dfile:
-        with open(result_path, 'w') as wfile:
-            wfile.write(dfile.readline().strip() + '\tpred\tpred_prob\n')
-
-            for idx, line in enumerate(dfile):
-                wfile.write(line.strip() + '\t' + str(y_pred[idx]) + '\t' + str(y_prob[idx][1]) + '\n')
-
-    utils.fair_eval(result_path)
+        wfile.write('...............................\n\n')
+        wfile.flush()
 
 
 if __name__ == '__main__':
-    task_list = [
-        # {
-        #    'name': 'gender',
-        #    'datap': '../analysis/all_data_encoded.tsv',
-        #    'train': '../split_data/gender.train',
-        #    'valid': '../split_data/gender.valid',
-        #    'test': '../split_data/gender.test',
-        #    'info': None,
-        # },
-        # {
-        #    'name': 'ethnicity',
-        #    'datap': '../analysis/all_data_encoded.tsv',
-        #    'train': '../split_data/ethnicity.train',
-        #    'valid': '../split_data/ethnicity.valid',
-        #    'test': '../split_data/ethnicity.test',
-        #    'info': {1: [1,2,3], 0: [0]}, # binary mapping attributes
-        # },
-        # {
-        #    'name': 'age',
-        #    'datap': '../analysis/all_data_encoded.tsv',
-        #    'train': '../split_data/age.train',
-        #    'valid': '../split_data/age.valid',
-        #    'test': '../split_data/age.test',
-        #    'info': None
-        # },
-        # {
-        #    'name': 'country',
-        #    'datap': '../analysis/all_data_encoded.tsv',
-        #    'train': '../split_data/country.train',
-        #    'valid': '../split_data/country.valid',
-        #    'test': '../split_data/country.test',
-        #    'info': None
-        # },
-        # {
-        #    'name': 'region',
-        #    'datap': '../analysis/all_data_encoded.tsv',
-        #    'train': '../split_data/region.train',
-        #    'valid': '../split_data/region.valid',
-        #    'test': '../split_data/region.test',
-        #    'info': {1: [2,3], 0: [0,1]}, # binary mapping attributes
-        # },
-        {
-            'name': 'ethMulti',
-            'datap': '../analysis/all_data_encoded.tsv',
-            'train': '../split_data/ethMulti.train',
-            'valid': '../split_data/ethMulti.valid',
-            'test': '../split_data/ethMulti.test',
-            # 'info': {1: [1,2,3], 0: [0]}, # multi-attributes
-        },
+    review_dir = '../data/review/'
+    hate_speech_dir = '../data/hatespeech/'
+    model_dir = '../resources/model/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    model_dir = model_dir + os.path.basename(__file__) + '/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    result_dir = '../resources/results/'
+    if not os.path.exists(result_dir):
+        os.mkdir(result_dir)
 
+    data_list = [
+        # ['review_amazon_english', review_dir + 'amazon/amazon.tsv', 'english'],
+        # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
+        # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
+        # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
+        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],
+        ['hatespeech_twitter_spanish', hate_speech_dir + 'Spanish/corpus.tsv', 'spanish'],
+        ['hatespeech_twitter_italian', hate_speech_dir + 'Italian/corpus.tsv', 'italian'],
+        ['hatespeech_twitter_portuguese', hate_speech_dir + 'Portuguese/corpus.tsv', 'portuguese'],
+        ['hatespeech_twitter_polish', hate_speech_dir + 'Polish/corpus.tsv', 'polish'],
     ]
 
-    for task in task_list:
-        build_lr(task)
+    for data_entry in tqdm(data_list):
+        print('Working on: ', data_entry)
+
+        parameters = {
+            'result_path': os.path.join(result_dir, os.path.basename(__file__)+'.txt'),
+            'model_dir': model_dir,
+            'dname': data_entry[0],
+            'dpath': data_entry[1],
+            'lang': data_entry[2],
+            'max_feature': 10000,
+            'over_sample': False,
+        }
+
+        build_lr(parameters)
