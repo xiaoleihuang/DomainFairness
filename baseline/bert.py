@@ -6,10 +6,7 @@ import datetime
 import numpy as np
 from sklearn import metrics
 from tqdm import tqdm
-from imblearn.over_sampling import RandomOverSampler
 
-import torch
-import torch.nn as nn
 import torch
 from torch.utils.data import DataLoader
 from imblearn.over_sampling import RandomOverSampler
@@ -87,7 +84,6 @@ def build_bert(params):
     # build model
     bert_model = BertForSequenceClassification.from_pretrained(params['bert_name'])
     bert_model = bert_model.to(device)
-    criterion = nn.CrossEntropyLoss().to(device)
     # param_optimizer = list(bert_model.named_parameters())
     # no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer = torch.optim.Adam(bert_model.parameters(), lr=params['lr'])
@@ -133,7 +129,7 @@ def build_bert(params):
                     'input_docs': input_docs,
                     'input_domains': input_domains
                 })
-            logits = predictions.logits.detach().cpu().numpy()
+            logits = torch.sigmoid(predictions.detach().cpu()).numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
@@ -157,7 +153,7 @@ def build_bert(params):
                         'input_docs': input_docs,
                         'input_domains': input_domains
                     })
-                logits = predictions.detach().cpu().numpy()
+                logits = torch.sigmoid(predictions.detach().cpu()).numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())

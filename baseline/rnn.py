@@ -1,88 +1,241 @@
 """GRU
 """
-import pickle
 import os
+import datetime
+
 import numpy as np
+from tqdm import tqdm
 from sklearn import metrics
 from imblearn.over_sampling import RandomOverSampler
 
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 import utils
 
 
-def build_model(params):
-    print('Loading Data...')
-    data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
-    train_indices, val_indices, test_indices = utils.data_split(data)
+class RegularRNN(nn.Module):
+    def __init__(self, params):
+        super(RegularRNN, self).__init__()
+        self.params = params
 
-    # load train
-    input_data = {
+        if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
+            self.wemb = nn.Embedding.from_pretrained(
+                torch.FloatTensor(np.load(
+                    self.params['word_emb_path'], allow_pickle=True))
+            )
+        else:
+            self.wemb = nn.Embedding(
+                self.params['max_feature'], self.params['emb_dim']
+            )
+            self.wemb.reset_parameters()
+            nn.init.kaiming_uniform_(self.wemb.weight, a=np.sqrt(5))
+
+        if self.params['bidirectional']:
+            self.word_hidden_size = self.params['emb_dim'] // 2
+        else:
+            self.word_hidden_size = self.params['emb_dim']
+
+        # domain adaptation
+        self.doc_net_general = nn.GRU(
+            self.wemb.embedding_dim, self.word_hidden_size,
+            bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
+            batch_first=True
+        )
+
+        # prediction
+        self.predictor = nn.Linear(
+            self.params['emb_dim'], self.params['num_label'])
+
+    def forward(self, input_docs):
+        # encode the document from different perspectives
+        doc_embs = self.wemb(input_docs)
+        _, doc_general = self.doc_net_general(doc_embs)  # omit hidden vectors
+
+        # concatenate hidden state
+        if self.params['bidirectional']:
+            doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
+
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
+
+        # prediction
+        doc_preds = self.predictor(doc_general)
+        return doc_preds
+
+
+def build_model(params):
+    if torch.cuda.is_available() and params['device'] != 'cpu':
+        device = torch.device(params['device'])
+    else:
+        device = torch.device('cpu')
+    params['device'] = device
+
+    print('Loading Data...')
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
+    data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
+    params['unique_domains'] = np.unique(data[params['domain_name']])
+
+    train_indices, val_indices, test_indices = utils.data_split(data)
+    train_data = {
         'docs': [data['docs'][item] for item in train_indices],
         'labels': [data['labels'][item] for item in train_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in train_indices],
+    }
+    valid_data = {
+        'docs': [data['docs'][item] for item in val_indices],
+        'labels': [data['labels'][item] for item in val_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in val_indices],
+    }
+    test_data = {
+        'docs': [data['docs'][item] for item in test_indices],
+        'labels': [data['labels'][item] for item in test_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
     }
     if params['over_sample']:
         ros = RandomOverSampler(random_state=33)
-        sample_indices = list(range(len(input_data['docs'])))
-        sample_indices, _ = ros.fit_resample(sample_indices, input_data['labels'])
-        input_data = {
-            'docs': [input_data['docs'][item] for item in sample_indices],
-            'labels': [input_data['labels'][item] for item in sample_indices],
+        sample_indices = list(range(len(train_data['docs'])))
+        sample_indices, _ = ros.fit_resample(sample_indices, train_data['labels'])
+        train_data = {
+            'docs': [train_data['docs'][item] for item in sample_indices],
+            'labels': [train_data['labels'][item] for item in sample_indices],
+            params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
         }
 
     # too large data to fit memory, remove some
     # training data size: 200000
-    if len(input_data['docs']) > 200000:
+    if len(train_data['docs']) > 200000:
         np.random.seed(33)
-        indices = list(range(len(input_data['docs'])))
+        indices = list(range(len(train_data['docs'])))
         np.random.shuffle(indices)
         indices = indices[:200000]
-        input_data = {
-            'docs': [input_data['docs'][item] for item in indices],
-            'labels': [input_data['labels'][item] for item in indices],
+        train_data = {
+            'docs': [train_data['docs'][item] for item in indices],
+            'labels': [train_data['labels'][item] for item in indices],
+            params['domain_name']: [train_data[params['domain_name']][item] for item in indices],
         }
 
-    # load valid
-
-    # load test
-    print('Loading Test data')
-    test_data = {
-        'docs': [data['docs'][item] for item in test_indices],
-        'labels': [data['labels'][item] for item in test_indices],
-        params['domain_name']: [input_data[params['domain_name']][item] for item in test_indices],
-    }
-
-    print('Testing.............................')
-    input_feats = lr_vect.transform_test(input_data['docs'])
-    pred_label = clf.predict(input_feats)
-    fpr, tpr, _ = metrics.roc_curve(
-        y_true=input_data['labels'], y_score=clf.predict_proba(input_feats)[:, 1],
+    train_data = utils.TorchDataset(train_data, params['domain_name'])
+    train_data_loader = DataLoader(
+        train_data, batch_size=params['batch_size'], shuffle=True,
+        collate_fn=data_encoder
+    )
+    valid_data = utils.TorchDataset(valid_data, params['domain_name'])
+    valid_data_loader = DataLoader(
+        valid_data, batch_size=params['batch_size'], shuffle=False,
+        collate_fn=data_encoder
+    )
+    test_data = utils.TorchDataset(test_data, params['domain_name'])
+    test_data_loader = DataLoader(
+        test_data, batch_size=params['batch_size'], shuffle=False,
+        collate_fn=data_encoder
     )
 
-    with open(params['result_path'], 'a') as wfile:
-        wfile.write('{}...............................\n'.format(datetime.datetime.now()))
-        wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
-        wfile.write('F1-weighted score: {}\n'.format(
-            metrics.f1_score(y_true=input_data['labels'], y_pred=pred_label, average='weighted')
-        ))
-        wfile.write('AUC score: {}\n'.format(
-            metrics.auc(fpr, tpr)
-        ))
-        wfile.write(metrics.classification_report(
-            y_true=input_data['labels'], y_pred=pred_label, digits=3) + '\n')
-        wfile.write('\n')
+    # build model
+    rnn_model = RegularRNN(params)
+    rnn_model = rnn_model.to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
+    optimizer = torch.optim.RMSprop(rnn_model.parameters(), lr=params['lr'])
 
-        wfile.write('Fairness Evaluation\n')
-        wfile.write(
-            utils.fair_eval(
-                true_labels=input_data['labels'],
-                pred_labels=pred_label,
-                domain_labels=input_data[params['domain_name']]
-            ) + '\n'
-        )
+    # train the networks
+    print('Start to train...')
+    print(params)
+    best_score = 0.
+    for epoch in tqdm(range(params['epochs'])):
+        train_loss = 0
+        rnn_model.train()
+        rnn_model.change_mode('train')
 
-        wfile.write('...............................\n\n')
-        wfile.flush()
+        for step, train_batch in enumerate(train_data_loader):
+            train_batch = tuple(t.to(device) for t in train_batch)
+            input_docs, input_labels, input_domains = train_batch
+            optimizer.zero_grad()
+            predictions = rnn_model(**{
+                'input_docs': input_docs
+            })
+            loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
+            train_loss += loss.item()
+
+            loss_avg = train_loss / (step + 1)
+            if (step + 1) % 101 == 0:
+                print('Epoch: {}, Step: {}'.format(epoch, step))
+                print('\tLoss: {}.'.format(loss_avg))
+                print('-------------------------------------------------')
+
+            loss.backward()
+            # torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 0.5)
+            optimizer.step()
+
+        # evaluate on the valid set
+        y_preds = []
+        y_trues = []
+        rnn_model.change_mode('valid')
+        for valid_batch in valid_data_loader:
+            valid_batch = tuple(t.to(device) for t in valid_batch)
+            input_docs, input_labels, input_domains = valid_batch
+            with torch.no_grad():
+                predictions = rnn_model(**{
+                    'input_docs': input_docs,
+                })
+            logits = predictions.detach().cpu().numpy()
+            pred_flat = np.argmax(logits, axis=1).flatten()
+            y_preds.extend(pred_flat)
+            y_trues.extend(input_labels.to('cpu').numpy())
+
+        eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='weighted')
+        if eval_score > best_score:
+            best_score = eval_score
+            torch.save(rnn_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
+
+            y_preds = []
+            y_probs = []
+            y_trues = []
+            y_domains = []
+            # evaluate on the test set
+            for test_batch in test_data_loader:
+                test_batch = tuple(t.to(device) for t in test_batch)
+                input_docs, input_labels, input_domains = test_batch
+
+                with torch.no_grad():
+                    predictions = rnn_model(**{
+                        'input_docs': input_docs,
+                    })
+                logits = predictions.detach().cpu().numpy()
+                pred_flat = np.argmax(logits, axis=1).flatten()
+                y_preds.extend(pred_flat)
+                y_trues.extend(input_labels.to('cpu').numpy())
+                y_probs.extend([item[1] for item in logits])
+                y_domains.extend(input_domains.detach().cpu().numpy())
+
+            with open(params['result_path'], 'a') as wfile:
+                wfile.write('{}...............................\n'.format(datetime.datetime.now()))
+                wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
+                wfile.write('F1-weighted score: {}\n'.format(
+                    metrics.f1_score(y_true=y_trues, y_pred=y_preds, average='weighted')
+                ))
+                fpr, tpr, _ = metrics.roc_curve(y_true=y_trues, y_score=y_probs)
+                wfile.write('AUC score: {}\n'.format(
+                    metrics.auc(fpr, tpr)
+                ))
+                report = metrics.classification_report(
+                    y_true=y_trues, y_pred=y_preds, digits=3
+                )
+                print(report)
+                wfile.write(report)
+                wfile.write('\n')
+
+                wfile.write('Fairness Evaluation\n')
+                wfile.write(
+                    utils.fair_eval(
+                        true_labels=y_trues,
+                        pred_labels=y_preds,
+                        domain_labels=y_domains
+                    ) + '\n'
+                )
+
+                wfile.write('...............................\n\n')
+                wfile.flush()
 
 
 if __name__ == '__main__':
