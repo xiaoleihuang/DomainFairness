@@ -2,6 +2,7 @@
 """
 import os
 import datetime
+import argparse
 
 import numpy as np
 from tqdm import tqdm
@@ -76,6 +77,14 @@ def build_model(params):
     data_encoder = utils.DataEncoder(params, mtype='rnn')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
+
+    # build tokenizer and weight
+    tok = utils.build_tok(
+        data['docs'], max_feature=params['max_feature'],
+        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
+    )
+    if not os.path.exists(params['word_emb_path']):
+        utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
@@ -239,6 +248,13 @@ def build_model(params):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Process model parameters.')
+    parser.add_argument('--lr', type=float, help='Learning rate', default=.0001)
+    parser.add_argument('--batch_size', type=int, help='Batch size', default=16)
+    parser.add_argument('--max_len', type=int, help='Max length', default=512)
+    parser.add_argument('--device', type=str, default='cpu')
+    args = parser.parse_args()
+
     review_dir = '../data/review/'
     hate_speech_dir = '../data/hatespeech/'
     model_dir = '../resources/model/'
@@ -278,6 +294,20 @@ if __name__ == '__main__':
             'lang': data_entry[2],
             'max_feature': 10000,
             'over_sample': False,
+            'domain_name': 'gender',
+            'epochs': 20,
+            'batch_size': args.batch_size,
+            'lr': args.lr,
+            'max_len': args.max_len,
+            'dp_rate': .2,
+            'optimizer': 'rmsprop',
+            'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
+            'emb_dim': 200,
+            'word_emb_path': os.path.join(model_dir, data_entry[0] + '.npy'),
+            'unique_domains': [],
+            'bidirectional': False,
+            'device': args.device,
+            'num_label': 2,
         }
 
         build_model(parameters)

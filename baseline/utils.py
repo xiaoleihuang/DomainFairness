@@ -288,6 +288,7 @@ def build_wt(tkn, emb_path, opath):
                     ], dtype=np.float32)
     # emb_matrix = np.array(emb_matrix, dtype=np.float32)
     np.save(opath, emb_matrix)
+    return emb_matrix
 
 
 def build_tok(docs, max_feature, opath):

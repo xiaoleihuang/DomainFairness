@@ -152,7 +152,7 @@ def build_base(params):
     params['device'] = device
 
     # load data
-    data_encoder = utils.DataEncoder(params, mtype='bert')
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
 
@@ -386,7 +386,6 @@ if __name__ == '__main__':
             'lr': args.lr,
             'max_len': args.max_len,
             'dp_rate': .2,
-            'optimizer': 'adamw',
             'emb_dim': 200,
             'unique_domains': [],
             'bidirectional': False,
