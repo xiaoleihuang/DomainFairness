@@ -74,17 +74,22 @@ def build_model(params):
     params['device'] = device
 
     print('Loading Data...')
-    data_encoder = utils.DataEncoder(params, mtype='rnn')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
 
     # build tokenizer and weight
+    tok_dir = os.path.dirname(params['dpath'])
+    params['tok_dir'] = tok_dir
+    params['word_emb_path'] = os.path.join(
+        tok_dir, data_entry[0] + '.npy'
+    )
     tok = utils.build_tok(
         data['docs'], max_feature=params['max_feature'],
-        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
+        opath=os.path.join(tok_dir, '{}-{}.tok'.format(params['dname'], params['lang']))
     )
     if not os.path.exists(params['word_emb_path']):
         utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
@@ -303,7 +308,6 @@ if __name__ == '__main__':
             'optimizer': 'rmsprop',
             'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'emb_dim': 200,
-            'word_emb_path': os.path.join(model_dir, data_entry[0] + '.npy'),
             'unique_domains': [],
             'bidirectional': False,
             'device': args.device,

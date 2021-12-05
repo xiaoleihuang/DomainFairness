@@ -1,239 +1,337 @@
-"""GRU for blinding some sensitive words as unknown words
+"""GRU
 """
-import pickle
 import os
-import numpy as np
-from sklearn.metrics import f1_score
+import datetime
+import argparse
+import re
 
-from keras.layers import Input, Embedding
-from keras.layers import Bidirectional, GRU
-from keras.layers import Dense
-from keras.models import Model
+import numpy as np
+from tqdm import tqdm
+from sklearn import metrics
+from imblearn.over_sampling import RandomOverSampler
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 import utils
 
 
-def black_list():
-    """To obtain indices of sensitive words.
-        This will help to mask the sensitive words
-    """
-    indices = set()
-    if os.path.exists('./resource/black_indices.txt'):
-        with open('./resource/black_indices.txt') as dfile:
-            for line in dfile:
-                indices.add(int(line.strip()))
-    else:
-        with open('./resource/replace_{}.txt'.format(params['lang'])) as dfile:
-            replaces = set()
-            for line in dfile:
-                # only use unigram
-                if len(line.split(' ')) > 1:
-                    continue
+def replace_words(doc, replace):
+    # replace numbers
+    doc = re.sub('^[0-9]+', 'number', doc)
+    # replace words
+    doc = [word if word not in replace else 'identity' for word in doc.split()]
 
-                replaces.add(line.strip())
-
-        # load tokenizer to find indices of words
-        tok = pickle.load(open('./vect/keras.tkn', 'rb'))
-
-        # loop through the replacement words
-        for word in tok.word_index:
-            for replace in replaces:
-                if replace in word:
-                    indices.add(tok.word_index[word])
-                    break
-
-    return indices
+    return ' '.join(doc)
 
 
-def build_model(params):
-    clf_path = './clf/gru_blind.' + params['tname']
-    result_path = './results/gru_blind.' + params['tname']
-    # blind words
-    black_set = black_list()
+class RegularRNN(nn.Module):
+    def __init__(self, params):
+        super(RegularRNN, self).__init__()
+        self.params = params
 
-    if os.path.exists(clf_path):
-        best_model = pickle.load(open(clf_path, 'rb'))
-    else:
-        if params['num_cl'] > 2:
-            pred_func = 'softmax'
-            loss_func = 'categorical_crossentropy'
+        if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
+            self.wemb = nn.Embedding.from_pretrained(
+                torch.FloatTensor(np.load(
+                    self.params['word_emb_path'], allow_pickle=True))
+            )
         else:
-            pred_func = 'sigmoid'
-            loss_func = 'binary_crossentropy'
-
-        # load embedding matrix
-        wt_matrix = utils.build_wt(params['emb_file'])
-
-        # define the GRU model
-        inputs = Input(
-            shape=(params['seq_max_len'],), dtype='int32', name='input'
-        )
-        embeds = Embedding(
-            wt_matrix.shape[0], wt_matrix.shape[1],
-            weights=[wt_matrix], input_length=params['seq_max_len'],
-            trainable=True, name='embedding'
-        )(inputs)
-        bigru = Bidirectional(GRU(
-            params['rnn_size'], kernel_initializer="glorot_uniform"
-        ))(embeds)
-        predicts = Dense(
-            params['num_cl'], activation=pred_func, name='predict'
-        )(bigru)
-
-        model = Model(inputs=inputs, outputs=predicts)
-        model.compile(
-            loss=loss_func, optimizer=params['opt'],
-            metrics=['accuracy']
-        )
-        print(model.summary())
-
-        # create indices of documents, 
-        # because other models will overwrite the current indices
-        utils.build_indices(params['tname'])
-
-        best_valid_f1 = 0.0
-        best_model = None
-
-        for e in range(params['epochs']):
-            accuracy = 0.0
-            loss = 0.0
-            step = 1
-
-            print('--------------Epoch: {}--------------'.format(e))
-
-            # load the datasets
-            train_iter = utils.data_iter(
-                params['tname'], suffix='train',
-                batch_size=params['batch_size']
+            self.wemb = nn.Embedding(
+                self.params['max_feature'], self.params['emb_dim']
             )
+            self.wemb.reset_parameters()
+            nn.init.kaiming_uniform_(self.wemb.weight, a=np.sqrt(5))
 
-            # train the model
-            for _, x_train, y_train in train_iter:
-                if len(np.unique(y_train)) == 1:
-                    continue
+        if self.params['bidirectional']:
+            self.word_hidden_size = self.params['emb_dim'] // 2
+        else:
+            self.word_hidden_size = self.params['emb_dim']
 
-                # blind the words
-                x_train = np.asarray([
-                    [
-                        w_idx if w_idx not in black_set else 0 for w_idx in item
-                    ] for item in x_train
-                ])
+        # domain adaptation
+        self.doc_net_general = nn.GRU(
+            self.wemb.embedding_dim, self.word_hidden_size,
+            bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
+            batch_first=True
+        )
 
-                tmp = model.train_on_batch(
-                    [x_train], y_train,
-                    class_weight=params['class_wt']
-                )
+        # prediction
+        self.predictor = nn.Linear(
+            self.params['emb_dim'], self.params['num_label'])
 
-                loss += tmp[0]
-                loss_avg = loss / step
-                accuracy += tmp[1]
-                accuracy_avg = accuracy / step
-                if step % 30 == 0:
-                    print('Step: {}'.format(step))
-                    print('\tLoss: {}. Accuracy: {}'.format(loss_avg, accuracy_avg))
-                    print('-------------------------------------------------')
-                step += 1
+    def forward(self, input_docs):
+        # encode the document from different perspectives
+        doc_embs = self.wemb(input_docs)
+        _, doc_general = self.doc_net_general(doc_embs)  # omit hidden vectors
 
-            # valid the model
-            print('---------------------------Validation------------------------------')
-            valid_iter = utils.data_iter(
-                params['tname'], suffix='valid',
-                batch_size=params['batch_size']
-            )
+        # concatenate hidden state
+        if self.params['bidirectional']:
+            doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
+
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
+
+        # prediction
+        doc_preds = self.predictor(doc_general)
+        return doc_preds
+
+
+def build_rnn_blind(params):
+    # load the replacement words
+    with open('../resources/lexicons/replace_{}.txt'.format(params['lang'])) as dfile:
+        replaces = set()
+        for line in dfile:
+            # only use unigram
+            if len(line.split(' ')) > 1:
+                continue
+
+            replaces.add(line.strip())
+
+    if torch.cuda.is_available() and params['device'] != 'cpu':
+        device = torch.device(params['device'])
+    else:
+        device = torch.device('cpu')
+    params['device'] = device
+
+    print('Loading Data...')
+    data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
+    params['unique_domains'] = np.unique(data[params['domain_name']])
+
+    # build tokenizer and weight
+    tok_dir = os.path.dirname(params['dpath'])
+    params['tok_dir'] = tok_dir
+    params['word_emb_path'] = os.path.join(
+        tok_dir, data_entry[0] + '.npy'
+    )
+    tok = utils.build_tok(
+        data['docs'], max_feature=params['max_feature'],
+        opath=os.path.join(tok_dir, '{}-{}.tok'.format(params['dname'], params['lang']))
+    )
+    if not os.path.exists(params['word_emb_path']):
+        utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
+
+    train_indices, val_indices, test_indices = utils.data_split(data)
+    train_data = {
+        'docs': [replace_words(data['docs'][item], replaces) for item in train_indices],
+        'labels': [data['labels'][item] for item in train_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in train_indices],
+    }
+    valid_data = {
+        'docs': [replace_words(data['docs'][item], replaces) for item in val_indices],
+        'labels': [data['labels'][item] for item in val_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in val_indices],
+    }
+    test_data = {
+        'docs': [replace_words(data['docs'][item], replaces) for item in test_indices],
+        'labels': [data['labels'][item] for item in test_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
+    }
+    if params['over_sample']:
+        ros = RandomOverSampler(random_state=33)
+        sample_indices = list(range(len(train_data['docs'])))
+        sample_indices, _ = ros.fit_resample(sample_indices, train_data['labels'])
+        train_data = {
+            'docs': [train_data['docs'][item] for item in sample_indices],
+            'labels': [train_data['labels'][item] for item in sample_indices],
+            params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
+        }
+
+    # too large data to fit memory, remove some
+    # training data size: 200000
+    if len(train_data['docs']) > 200000:
+        np.random.seed(33)
+        indices = list(range(len(train_data['docs'])))
+        np.random.shuffle(indices)
+        indices = indices[:200000]
+        train_data = {
+            'docs': [train_data['docs'][item] for item in indices],
+            'labels': [train_data['labels'][item] for item in indices],
+            params['domain_name']: [train_data[params['domain_name']][item] for item in indices],
+        }
+
+    train_data = utils.TorchDataset(train_data, params['domain_name'])
+    train_data_loader = DataLoader(
+        train_data, batch_size=params['batch_size'], shuffle=True,
+        collate_fn=data_encoder
+    )
+    valid_data = utils.TorchDataset(valid_data, params['domain_name'])
+    valid_data_loader = DataLoader(
+        valid_data, batch_size=params['batch_size'], shuffle=False,
+        collate_fn=data_encoder
+    )
+    test_data = utils.TorchDataset(test_data, params['domain_name'])
+    test_data_loader = DataLoader(
+        test_data, batch_size=params['batch_size'], shuffle=False,
+        collate_fn=data_encoder
+    )
+
+    # build model
+    rnn_model = RegularRNN(params)
+    rnn_model = rnn_model.to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
+    optimizer = torch.optim.RMSprop(rnn_model.parameters(), lr=params['lr'])
+
+    # train the networks
+    print('Start to train...')
+    print(params)
+    best_score = 0.
+    for epoch in tqdm(range(params['epochs'])):
+        train_loss = 0
+        rnn_model.train()
+        rnn_model.change_mode('train')
+
+        for step, train_batch in enumerate(train_data_loader):
+            train_batch = tuple(t.to(device) for t in train_batch)
+            input_docs, input_labels, input_domains = train_batch
+            optimizer.zero_grad()
+            predictions = rnn_model(**{
+                'input_docs': input_docs
+            })
+            loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
+            train_loss += loss.item()
+
+            loss_avg = train_loss / (step + 1)
+            if (step + 1) % 101 == 0:
+                print('Epoch: {}, Step: {}'.format(epoch, step))
+                print('\tLoss: {}.'.format(loss_avg))
+                print('-------------------------------------------------')
+
+            loss.backward()
+            # torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 0.5)
+            optimizer.step()
+
+        # evaluate on the valid set
+        y_preds = []
+        y_trues = []
+        rnn_model.change_mode('valid')
+        for valid_batch in valid_data_loader:
+            valid_batch = tuple(t.to(device) for t in valid_batch)
+            input_docs, input_labels, input_domains = valid_batch
+            with torch.no_grad():
+                predictions = rnn_model(**{
+                    'input_docs': input_docs,
+                })
+            logits = predictions.detach().cpu().numpy()
+            pred_flat = np.argmax(logits, axis=1).flatten()
+            y_preds.extend(pred_flat)
+            y_trues.extend(input_labels.to('cpu').numpy())
+
+        eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='weighted')
+        if eval_score > best_score:
+            best_score = eval_score
+            torch.save(rnn_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
 
             y_preds = []
-            y_valids = []
+            y_probs = []
+            y_trues = []
+            y_domains = []
+            # evaluate on the test set
+            for test_batch in test_data_loader:
+                test_batch = tuple(t.to(device) for t in test_batch)
+                input_docs, input_labels, input_domains = test_batch
 
-            for _, x_valid, y_valid in valid_iter:
-                # blind the words
-                x_valid = np.asarray([
-                    [
-                        w_idx if w_idx not in black_set else 0 for w_idx in item
-                    ] for item in x_valid
-                ])
+                with torch.no_grad():
+                    predictions = rnn_model(**{
+                        'input_docs': input_docs,
+                    })
+                logits = predictions.detach().cpu().numpy()
+                pred_flat = np.argmax(logits, axis=1).flatten()
+                y_preds.extend(pred_flat)
+                y_trues.extend(input_labels.to('cpu').numpy())
+                y_probs.extend([item[1] for item in logits])
+                y_domains.extend(input_domains.detach().cpu().numpy())
 
-                tmp_preds = model.predict([x_valid])
+            with open(params['result_path'], 'a') as wfile:
+                wfile.write('{}...............................\n'.format(datetime.datetime.now()))
+                wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
+                wfile.write('F1-weighted score: {}\n'.format(
+                    metrics.f1_score(y_true=y_trues, y_pred=y_preds, average='weighted')
+                ))
+                fpr, tpr, _ = metrics.roc_curve(y_true=y_trues, y_score=y_probs)
+                wfile.write('AUC score: {}\n'.format(
+                    metrics.auc(fpr, tpr)
+                ))
+                report = metrics.classification_report(
+                    y_true=y_trues, y_pred=y_preds, digits=3
+                )
+                print(report)
+                wfile.write(report)
+                wfile.write('\n')
 
-                for item_tmp in tmp_preds:
-                    y_preds.append(round(item_tmp[0]))
-                y_valids.extend(y_valid)
+                wfile.write('Fairness Evaluation\n')
+                wfile.write(
+                    utils.fair_eval(
+                        true_labels=y_trues,
+                        pred_labels=y_preds,
+                        domain_labels=y_domains
+                    ) + '\n'
+                )
 
-            valid_f1 = f1_score(y_true=y_valids, y_pred=y_preds, average='weighted')
-            print('Validating f1-weighted score: ' + str(valid_f1))
-
-            if best_valid_f1 < valid_f1:
-                best_valid_f1 = valid_f1
-                best_model = model
-
-                pickle.dump(best_model, open(clf_path, 'wb'))
-
-    print('------------------------------Test---------------------------------')
-    if not os.path.exists(result_path):
-        y_preds_test = []
-        y_preds_prob = []
-
-        test_iter = utils.data_iter(
-            params['tname'], suffix='test',
-            batch_size=params['batch_size']
-        )
-
-        data = []
-        for data_batch, x_test, y_test in test_iter:
-            # blind the words
-            x_test = np.asarray([
-                [
-                    w_idx if w_idx not in black_set else 0 for w_idx in item
-                ] for item in x_test
-            ])
-
-            tmp_preds = best_model.predict([x_test])
-            data.extend(data_batch)
-            for item_tmp in tmp_preds:
-                y_preds_prob.append(item_tmp[0])
-                y_preds_test.append(int(round(item_tmp[0])))
-
-        assert len(y_preds_test) == len(data)
-
-        with open(result_path, 'w') as wfile:
-            wfile.write(
-                '\t'.join([
-                    'tid', 'uid', 'text', 'date', 'gender',
-                    'age', 'region', 'country', 'ethnicity', 'ethMulti', 'label', 'pred', 'pred_prob'
-                ]) + '\n'
-            )
-            for idx, label in enumerate(y_preds_test):
-                data[idx].append(str(y_preds_test[idx]))
-                data[idx].append(str(y_preds_prob[idx]))
-
-                wfile.write('\t'.join(data[idx]) + '\n')
-    utils.eval(result_path)
+                wfile.write('...............................\n\n')
+                wfile.flush()
 
 
 if __name__ == '__main__':
-    # gender
-    parameters = {
-        'tname': 'ethMulti', 'seq_max_len': 30, 'dp_rate': 0.3, 'opt': 'rmsprop', 'epochs': 10,
-        'class_wt': 'auto', 'batch_size': 64, 'lr': 0.001, 'num_cl': 1, 'dense_ac': 'relu', 'rnn_size': 256,
-        'emb_file': '../embeddings/fair/GoogleNews-vectors-negative300-hard-debiased.txt'
-    }
-    #    # gender
-    #    build_model(params)
+    parser = argparse.ArgumentParser(description='Process model parameters.')
+    parser.add_argument('--lr', type=float, help='Learning rate', default=.0001)
+    parser.add_argument('--batch_size', type=int, help='Batch size', default=16)
+    parser.add_argument('--max_len', type=int, help='Max length', default=512)
+    parser.add_argument('--device', type=str, default='cpu')
+    args = parser.parse_args()
 
-    #    # ethnicity
-    #    params['tname'] = 'ethnicity'
-    #    build_model(params)
+    review_dir = '../data/review/'
+    hate_speech_dir = '../data/hatespeech/'
+    model_dir = '../resources/model/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    model_dir = model_dir + os.path.basename(__file__) + '/'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    result_dir = '../resources/results/'
+    if not os.path.exists(result_dir):
+        os.mkdir(result_dir)
 
-    #    # age
-    #    params['tname'] = 'age'
-    #    build_model(params)
+    data_list = [
+        # ['review_amazon_english', review_dir + 'amazon/amazon.tsv', 'english'],
+        # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
+        # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
+        # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
+        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],
+        ['hatespeech_twitter_spanish', hate_speech_dir + 'Spanish/corpus.tsv', 'spanish'],
+        ['hatespeech_twitter_italian', hate_speech_dir + 'Italian/corpus.tsv', 'italian'],
+        ['hatespeech_twitter_portuguese', hate_speech_dir + 'Portuguese/corpus.tsv', 'portuguese'],
+        ['hatespeech_twitter_polish', hate_speech_dir + 'Polish/corpus.tsv', 'polish'],
+    ]
 
-    #    # country
-    #    params['tname'] = 'country'
-    #    build_model(params)
+    for data_entry in tqdm(data_list):
+        print('Working on: ', data_entry)
 
-    #    # region
-    #    params['tname'] = 'region'
-    #    build_model(params)
+        parameters = {
+            'result_path': os.path.join(result_dir, os.path.basename(__file__) + '.txt'),
+            'model_dir': model_dir,
+            'dname': data_entry[0],
+            'dpath': data_entry[1],
+            'lang': data_entry[2],
+            'max_feature': 10000,
+            'over_sample': False,
+            'domain_name': 'gender',
+            'epochs': 20,
+            'batch_size': args.batch_size,
+            'lr': args.lr,
+            'max_len': args.max_len,
+            'dp_rate': .2,
+            'optimizer': 'rmsprop',
+            'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
+            'emb_dim': 200,
+            'unique_domains': [],
+            'bidirectional': False,
+            'device': args.device,
+            'num_label': 2,
+        }
 
-    # ethnicity-multi
-    build_model(parameters)
+        build_rnn_blind(parameters)

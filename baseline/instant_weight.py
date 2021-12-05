@@ -188,9 +188,15 @@ def build_weight(params):
     debias_weights = np.load(params['model_dir'] + "weights_{}.npy".format(params['dname']))
 
     # build tokenizer and weight
+    # build tokenizer and weight
+    tok_dir = os.path.dirname(params['dpath'])
+    params['tok_dir'] = tok_dir
+    params['word_emb_path'] = os.path.join(
+        tok_dir, data_entry[0] + '.npy'
+    )
     tok = utils.build_tok(
         data['docs'], max_feature=params['max_feature'],
-        opath=os.path.join(params['model_dir'], params['dname'] + '.tok')
+        opath=os.path.join(tok_dir, '{}-{}.tok'.format(params['dname'], params['lang']))
     )
     if not os.path.exists(params['word_emb_path']):
         emb = utils.build_wt(tok, params['emb_path'], params['word_emb_path'])

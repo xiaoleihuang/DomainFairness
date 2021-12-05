@@ -26,8 +26,8 @@ class DeepMojiModel(nn.Module):
     def __init__(self, params):
         super(DeepMojiModel, self).__init__()
         self.params = params
-        self.emb_size = self.params['emb_size']
-        self.hidden_size = self.params['hidden_size']
+        self.emb_size = self.params['max_feature']
+        self.hidden_size = self.params['emb_dim']
         self.num_classes = self.params['num_label']
         self.adv_level = self.params['adv_level']
         self.n_hidden = self.params['n_hidden']
@@ -152,9 +152,23 @@ def build_base(params):
     params['device'] = device
 
     # load data
-    data_encoder = utils.DataEncoder(params, mtype='rnn')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     params['unique_domains'] = np.unique(data[params['domain_name']])
+
+    # build tokenizer and weight
+    tok_dir = os.path.dirname(params['dpath'])
+    params['tok_dir'] = tok_dir
+    params['word_emb_path'] = os.path.join(
+        tok_dir, data_entry[0] + '.npy'
+    )
+    utils.build_tok(
+        data['docs'], max_feature=params['max_feature'],
+        opath=os.path.join(tok_dir, '{}-{}.tok'.format(params['dname'], params['lang']))
+    )
+
+    # if not os.path.exists(params['word_emb_path']):
+    #     utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
@@ -265,6 +279,19 @@ def build_base(params):
         discriminator.GR = False
         base_model.eval()
         discriminator.eval()
+        # converge the discriminator first
+        for _ in range(10):
+            for valid_batch in valid_data_loader:
+                adv_optimizer.zero_grad()
+                valid_batch = tuple(t.to(device) for t in valid_batch)
+                input_docs, input_labels, input_domains = valid_batch
+                hs = base_model.hidden(input_docs)
+                adv_predictions = discriminator(hs)
+                adv_loss_item = criterion(adv_predictions, input_domains)
+                adv_loss_item.backward()
+                torch.nn.utils.clip_grad_norm(discriminator.parameters(), params['clipping_value'])
+                adv_optimizer.step()
+
         valid_loss = 0.0
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
@@ -381,6 +408,7 @@ if __name__ == '__main__':
             'use_large': False,
             'domain_name': 'gender',
             'over_sample': False,
+            'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'epochs': 10,
             'batch_size': args.batch_size,
             'lr': args.lr,

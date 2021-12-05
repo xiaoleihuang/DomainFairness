@@ -315,7 +315,7 @@ class DataEncoder(object):
         self.mtype = mtype
         if self.mtype == 'rnn':
             self.tok = pickle.load(open(
-                os.path.join(params['model_dir'], params['dname'] + '.tok'), 'rb'))
+                os.path.join(params['tok_dir'], params['dname'] + '.tok'), 'rb'))
         elif self.mtype == 'bert':
             self.tok = BertTokenizer.from_pretrained(params['bert_name'])
         else:
