@@ -23,7 +23,7 @@ def black_list():
             for line in dfile:
                 indices.add(int(line.strip()))
     else:
-        with open('./resource/replace.txt') as dfile:
+        with open('./resource/replace_{}.txt'.format(params['lang'])) as dfile:
             replaces = set()
             for line in dfile:
                 # only use unigram

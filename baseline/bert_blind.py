@@ -25,7 +25,7 @@ def replace_words(doc, replace):
 
 def build_bert(params):
     # load the replacement words
-    with open('../resources/lexicons/replace.txt') as dfile:
+    with open('../resources/lexicons/replace_{}.txt'.format(params['lang'])) as dfile:
         replaces = set()
         for line in dfile:
             # only use unigram

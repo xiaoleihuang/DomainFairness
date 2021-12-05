@@ -1,5 +1,8 @@
 """This method implements blindness method in the paper of Counterfactual Fairness in Text Classification through
-Robustness """
+Robustness
+
+Gender sensitive words come from https://github.com/conversationai/unintended-ml-bias-analysis
+"""
 
 import os
 import pickle
@@ -30,7 +33,7 @@ def replace_words(doc, replace):
 
 def build_lr_blind(params):
     # load the replacement words
-    with open('../resources/lexicons/replace.txt') as dfile:
+    with open('../resources/lexicons/replace_{}.txt'.format(params['lang'])) as dfile:
         replaces = set()
         for line in dfile:
             # only use unigram
