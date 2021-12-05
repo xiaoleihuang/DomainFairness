@@ -9,12 +9,12 @@ with open(source_file) as dfile:
 		tokens.add(line.strip().lower())
 
 flist = [
-	['italian', 'ita_eng_lexicon.txt'],
+	['italian', 'it-en.txt'],
 	['danish', 'da-en.txt'],
-	['french', 'fra_eng_lexicon.txt'],
-	['polish', 'pol_eng_lexicon.txt'],
-	['spanish', 'spa_eng_lexicon.txt'],
-	['portuguese', 'por_eng_lexicon.txt'],
+	['french', 'fr-en.txt'],
+	['polish', 'pl-en.txt'],
+	['spanish', 'es-en.txt'],
+	['portuguese', 'pt-en.txt'],
 	['german', 'de-en.txt']
 ]
 
