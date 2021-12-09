@@ -152,7 +152,7 @@ def domain_bert(params):
     bert_model = bert_model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
     # kl_loss = nn.KLDivLoss().to(device)
-    #param_optimizer = list(bert_model.named_parameters())
+    # param_optimizer = list(bert_model.named_parameters())
     # no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer = torch.optim.Adam(bert_model.parameters(), lr=params['lr'])
 
