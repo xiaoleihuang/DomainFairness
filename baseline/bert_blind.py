@@ -114,7 +114,6 @@ def build_bert(params):
     for epoch in tqdm(range(params['epochs'])):
         train_loss = 0
         bert_model.train()
-        bert_model.change_mode('train')
 
         for step, train_batch in enumerate(train_data_loader):
             train_batch = tuple(t.to(device) for t in train_batch)
@@ -139,7 +138,7 @@ def build_bert(params):
         # evaluate on the valid set
         y_preds = []
         y_trues = []
-        bert_model.change_mode('valid')
+        bert_model.eval()
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
             input_docs, input_labels, input_domains = valid_batch

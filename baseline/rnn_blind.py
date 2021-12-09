@@ -179,7 +179,6 @@ def build_rnn_blind(params):
     for epoch in tqdm(range(params['epochs'])):
         train_loss = 0
         rnn_model.train()
-        rnn_model.change_mode('train')
 
         for step, train_batch in enumerate(train_data_loader):
             train_batch = tuple(t.to(device) for t in train_batch)
@@ -204,7 +203,7 @@ def build_rnn_blind(params):
         # evaluate on the valid set
         y_preds = []
         y_trues = []
-        rnn_model.change_mode('valid')
+        rnn_model.eval()
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
             input_docs, input_labels, input_domains = valid_batch
