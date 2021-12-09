@@ -281,7 +281,7 @@ def build_base(params):
         discriminator.eval()
         # converge the discriminator first
         for _ in range(10):
-            for valid_batch in valid_data_loader:
+            for valid_batch in train_data_loader:
                 adv_optimizer.zero_grad()
                 valid_batch = tuple(t.to(device) for t in valid_batch)
                 input_docs, input_labels, input_domains = valid_batch
