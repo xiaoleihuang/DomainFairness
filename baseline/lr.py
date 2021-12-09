@@ -81,7 +81,7 @@ def build_lr(params):
     }
 
     print('Testing.............................')
-    input_feats = lr_vect.transform_test(input_data['docs'])
+    input_feats = lr_vect.transform(input_data['docs'])
     pred_label = clf.predict(input_feats)
     fpr, tpr, _ = metrics.roc_curve(
         y_true=input_data['labels'], y_score=clf.predict_proba(input_feats)[:, 1],
