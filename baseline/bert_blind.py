@@ -25,8 +25,8 @@ def replace_words(doc, replace):
 
 def build_bert(params):
     # load the replacement words
+    replaces = set()
     with open('../resources/lexicons/replace_{}.txt'.format(params['lang'])) as dfile:
-        replaces = set()
         for line in dfile:
             # only use unigram
             if len(line.split(' ')) > 1:
@@ -47,17 +47,17 @@ def build_bert(params):
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
-        'docs': [replace_words(data['docs'][item], replace_words) for item in train_indices],
+        'docs': [replace_words(data['docs'][item], replaces) for item in train_indices],
         'labels': [data['labels'][item] for item in train_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in train_indices],
     }
     valid_data = {
-        'docs': [replace_words(data['docs'][item], replace_words) for item in val_indices],
+        'docs': [replace_words(data['docs'][item], replaces) for item in val_indices],
         'labels': [data['labels'][item] for item in val_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in val_indices],
     }
     test_data = {
-        'docs': [replace_words(data['docs'][item], replace_words) for item in test_indices],
+        'docs': [replace_words(data['docs'][item], replaces) for item in test_indices],
         'labels': [data['labels'][item] for item in test_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
     }
