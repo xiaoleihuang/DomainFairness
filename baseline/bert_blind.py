@@ -144,8 +144,7 @@ def build_bert(params):
             input_docs, input_labels, input_domains = valid_batch
             with torch.no_grad():
                 predictions = bert_model(**{
-                    'input_docs': input_docs,
-                    'input_domains': input_domains
+                    'input_ids': input_docs,
                 })
             logits = torch.sigmoid(predictions.detach().cpu()).numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
@@ -168,8 +167,7 @@ def build_bert(params):
 
                 with torch.no_grad():
                     predictions = bert_model(**{
-                        'input_docs': input_docs,
-                        'input_domains': input_domains
+                        'input_ids': input_docs,
                     })
                 logits = torch.sigmoid(predictions.detach().cpu()).numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
