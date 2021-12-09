@@ -175,6 +175,7 @@ if __name__ == '__main__':
             'lang': data_entry[2],
             'max_feature': 10000,
             'over_sample': False,
+            'domain_name': 'gender'
         }
 
         build_lr_blind(parameters)
