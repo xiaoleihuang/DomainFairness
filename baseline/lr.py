@@ -34,10 +34,10 @@ def build_lr(params):
         except OSError:
             spw_set = None
         lr_vect = TfidfVectorizer(
-            min_df=3,  max_features=params['max_feature'],
+            min_df=3, max_features=params['max_feature'],
             stop_words=spw_set, max_df=0.9, ngram_range=(1, 3),
         )
-        lr_vect.fit(data)
+        lr_vect.fit(data['docs'])
         pickle.dump(lr_vect, open(vect_path, 'wb'))
     train_indices, val_indices, test_indices = utils.data_split(data)
 
