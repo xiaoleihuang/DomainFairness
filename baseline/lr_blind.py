@@ -99,7 +99,7 @@ def build_lr_blind(params):
     input_data = {
         'docs': [replace_words(data['docs'][item], replaces) for item in test_indices],
         'labels': [data['labels'][item] for item in test_indices],
-        params['domain_name']: [input_data[params['domain_name']][item] for item in test_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
     }
 
     print('Testing.............................')

@@ -77,7 +77,7 @@ def build_lr(params):
     input_data = {
         'docs': [data['docs'][item] for item in test_indices],
         'labels': [data['labels'][item] for item in test_indices],
-        params['domain_name']: [input_data[params['domain_name']][item] for item in test_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
     }
 
     print('Testing.............................')
