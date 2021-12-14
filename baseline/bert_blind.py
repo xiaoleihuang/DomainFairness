@@ -146,7 +146,7 @@ def build_bert(params):
                 predictions = bert_model(**{
                     'input_ids': input_docs,
                 })
-            logits = torch.sigmoid(predictions.detach().cpu()).numpy()
+            logits = torch.sigmoid(predictions.logits.detach().cpu()).numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
@@ -169,7 +169,7 @@ def build_bert(params):
                     predictions = bert_model(**{
                         'input_ids': input_docs,
                     })
-                logits = torch.sigmoid(predictions.detach().cpu()).numpy()
+                logits = torch.sigmoid(predictions.logits.detach().cpu()).numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())
