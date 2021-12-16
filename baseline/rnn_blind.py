@@ -101,7 +101,7 @@ def build_rnn_blind(params):
     tok_dir = os.path.dirname(params['dpath'])
     params['tok_dir'] = tok_dir
     params['word_emb_path'] = os.path.join(
-        tok_dir, data_entry[0] + '.npy'
+        tok_dir, params['dname'] + '.npy'
     )
     tok = utils.build_tok(
         data['docs'], max_feature=params['max_feature'],
