@@ -424,6 +424,7 @@ if __name__ == '__main__':
             'adv_level': -1,
             'adv_units': 256,
             'clipping_value': 1,
+            'LAMBDA': 0.3,
         }
 
         # adjust parameters for other languages
