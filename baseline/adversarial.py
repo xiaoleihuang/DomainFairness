@@ -41,7 +41,7 @@ class DeepMojiModel(nn.Module):
             self.AF = self.ReLU
         self.dense1 = nn.Linear(self.emb_size, self.hidden_size)
         self.dense2 = [nn.Linear(self.hidden_size, self.hidden_size).to(self.device) for _ in range(self.n_hidden)]
-        self.dense3 = nn.Linear(self.hidden_size, self.num_label)
+        self.dense3 = nn.Linear(self.hidden_size, self.num_classes)
 
     def forward(self, inputs):
         out = self.dense1(inputs)
