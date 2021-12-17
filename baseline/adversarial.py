@@ -109,7 +109,7 @@ class Discriminator(nn.Module):
 
         self.GR = False
         self.grad_rev = GradientReversal(params['LAMBDA'])
-        self.fc1 = nn.Linear(params['input_size'], params['adv_units'])
+        self.fc1 = nn.Linear(params['emb_dim'], params['adv_units'])
         self.LeakyReLU = nn.LeakyReLU()
         self.fc2 = nn.Linear(params['adv_units'], params['adv_units'])
         self.fc3 = nn.Linear(params['adv_units'], len(params['unique_domains']))
