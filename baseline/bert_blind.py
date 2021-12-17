@@ -201,7 +201,6 @@ def build_bert(params):
 
                 wfile.write('...............................\n\n')
                 wfile.flush()
-    pass
 
 
 if __name__ == '__main__':
@@ -246,7 +245,7 @@ if __name__ == '__main__':
 
         parameters = {
             'result_path': os.path.join(
-                result_dir, '{}-{}.txt'.format(data_entry[0], os.path.basename(__file__))
+                result_dir, '{}.txt'.format(os.path.basename(__file__))
             ),
             'model_dir': model_dir,
             'dname': data_entry[0],
