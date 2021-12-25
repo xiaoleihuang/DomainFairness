@@ -29,6 +29,9 @@ class DeepMojiModel(nn.Module):
         self.emb_size = self.params['max_feature']
         self.hidden_size = self.params['emb_dim']
         self.num_classes = self.params['num_label']
+        if self.num_classes <= 3:
+            self.num_classes = 1
+            
         self.adv_level = self.params['adv_level']
         self.n_hidden = self.params['n_hidden']
         self.device = self.params['device']
