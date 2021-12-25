@@ -39,7 +39,12 @@ class DeepMojiModel(nn.Module):
         self.AF = nn.Tanh()
         if self.params.get('AF', "") == "relu":
             self.AF = self.ReLU
-        self.dense1 = nn.Linear(self.emb_size, self.hidden_size)
+
+        # embedding layer, original implementation uses a linear layer to randomly initialize embeddings
+        self.dense1 = nn.Embedding(
+            self.emb_size, self.hidden_size
+        )
+
         self.dense2 = [nn.Linear(self.hidden_size, self.hidden_size).to(self.device) for _ in range(self.n_hidden)]
         self.dense3 = nn.Linear(self.hidden_size, self.num_classes)
 
