@@ -27,6 +27,10 @@ from imblearn.over_sampling import RandomOverSampler
 
 import utils
 
+# cpu would be faster than using the GPU with original implementation
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # for cpu usage
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 
 def data_gen(docs, labels, weights=None, batch_size=64):
     """
@@ -160,6 +164,8 @@ def make_weights(params):
         (p1 if train_data['labels'][i] == 1 else p0) for i in range(len(train_data['labels']))])
     propensity[idxs_sens] = np.array([
         y_pred[i, train_data['labels'][idxs_sens[i]]] for i in range(len(idxs_sens))])
+    # normalize the propensity
+    propensity = np.asanyarray([item if item != 0 else 2. for item in propensity])
     np.save(params['model_dir'] + "propensity_%s.npy" % params['dname'], propensity)
     # propensity = np.load(dir_processed + "propensity_%s.npy" % name_dataset)
 
@@ -353,8 +359,8 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
-        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
         ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
         ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
         ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],

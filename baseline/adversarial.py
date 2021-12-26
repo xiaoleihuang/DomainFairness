@@ -419,11 +419,11 @@ if __name__ == '__main__':
         ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
         ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
         ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
-        ['hatespeech_twitter_english', hate_speech_dir + 'English/corpus.tsv', 'english'],
-        ['hatespeech_twitter_spanish', hate_speech_dir + 'Spanish/corpus.tsv', 'spanish'],
-        ['hatespeech_twitter_italian', hate_speech_dir + 'Italian/corpus.tsv', 'italian'],
-        ['hatespeech_twitter_portuguese', hate_speech_dir + 'Portuguese/corpus.tsv', 'portuguese'],
-        ['hatespeech_twitter_polish', hate_speech_dir + 'Polish/corpus.tsv', 'polish'],
+        ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
+        ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
+        ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
+        ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
+        ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
     ]
 
     for data_entry in tqdm(data_list):
@@ -442,7 +442,7 @@ if __name__ == '__main__':
             'domain_name': 'gender',
             'over_sample': False,
             'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
-            'epochs': 10,
+            'epochs': 20,
             'batch_size': args.batch_size,
             'lr': args.lr,
             'max_len': args.max_len,
