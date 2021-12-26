@@ -44,7 +44,7 @@ class DeepMojiModel(nn.Module):
             self.AF = self.ReLU
 
         # embedding layer, original implementation uses a linear layer to randomly initialize embeddings
-        self.dense1 = nn.Embedding(
+        self.dense1 = nn.EmbeddingBag(
             self.emb_size, self.hidden_size
         )
 
@@ -245,7 +245,10 @@ def build_base(params):
     adv_optimizer = torch.optim.Adam(filter(
         lambda p: p.requires_grad, discriminator.parameters()), lr=1e-1 * params['lr'])
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2)
-    criterion = nn.CrossEntropyLoss().to(device)
+    if params['num_label'] > 2:
+        criterion = nn.CrossEntropyLoss().to(device)
+    else:
+        criterion = nn.BCEWithLogitsLoss().to(device)
 
     # train the networks
     print('Start to train...')
@@ -260,6 +263,10 @@ def build_base(params):
         for step, train_batch in enumerate(train_data_loader):
             train_batch = tuple(t.to(device) for t in train_batch)
             input_docs, input_labels, input_domains = train_batch
+            if params['num_label'] < 3:
+                input_labels = input_labels.float()
+            if len(params['unique_domains']) < 3:
+                input_domains = input_domains.float()
             optimizer.zero_grad()
             adv_optimizer.zero_grad()
 
@@ -281,7 +288,7 @@ def build_base(params):
             # torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 0.5)
             optimizer.step()
 
-            torch.nn.utils.clip_grad_norm(discriminator.parameters(), params['clipping_value'])
+            torch.nn.utils.clip_grad_norm_(discriminator.parameters(), params['clipping_value'])
             adv_optimizer.step()
 
         # evaluate on the valid set
@@ -296,11 +303,15 @@ def build_base(params):
                 adv_optimizer.zero_grad()
                 valid_batch = tuple(t.to(device) for t in valid_batch)
                 input_docs, input_labels, input_domains = valid_batch
+                if params['num_label'] < 3:
+                    input_labels = input_labels.float()
+                if len(params['unique_domains']) < 3:
+                    input_domains = input_domains.float()
                 hs = base_model.hidden(input_docs)
                 adv_predictions = discriminator(hs)
                 adv_loss_item = criterion(adv_predictions.squeeze(), input_domains)
                 adv_loss_item.backward()
-                torch.nn.utils.clip_grad_norm(discriminator.parameters(), params['clipping_value'])
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), params['clipping_value'])
                 adv_optimizer.step()
 
         valid_loss = 0.0
@@ -309,11 +320,16 @@ def build_base(params):
             input_docs, input_labels, input_domains = valid_batch
             with torch.no_grad():
                 predictions = base_model(input_docs)
+            if params['num_label'] < 3:
+                input_labels = input_labels.float()
             valid_loss_batch = criterion(predictions.squeeze(), input_labels)
             valid_loss += valid_loss_batch.item()
 
-            logits = torch.sigmoid(predictions.detach().cpu()).numpy()
-            pred_flat = np.argmax(logits, axis=1).flatten()
+            logits = torch.sigmoid(predictions.detach().cpu())
+            if params['num_label'] < 3:
+                pred_flat = (logits > 0.5).long().numpy()
+            else:
+                pred_flat = np.argmax(logits.numpy(), axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
         scheduler.step(valid_loss / len(valid_data_loader))
@@ -334,11 +350,17 @@ def build_base(params):
 
                 with torch.no_grad():
                     predictions = base_model(input_docs)
-                logits = torch.sigmoid(predictions.detach().cpu()).numpy()
-                pred_flat = np.argmax(logits, axis=1).flatten()
+                logits = torch.sigmoid(predictions.squeeze().detach().cpu())
+                if params['num_label'] < 3:
+                    pred_flat = (logits > 0.5).long().numpy()
+                else:
+                    pred_flat = np.argmax(logits.numpy(), axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())
-                y_probs.extend([item[1] for item in logits])
+                if params['num_label'] < 3:
+                    y_probs.extend([item for item in logits])
+                else:
+                    y_probs.extend([item[1] for item in logits])
                 y_domains.extend(input_domains.detach().cpu().numpy())
 
             with open(params['result_path'], 'a') as wfile:
