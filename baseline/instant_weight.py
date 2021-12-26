@@ -16,8 +16,9 @@ from keras.optimizers import RMSprop
 from keras_preprocessing.sequence import pad_sequences
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, log_loss
+from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import cross_val_predict
+from sklearn.utils import class_weight
 
 import numpy as np
 from sklearn import metrics
@@ -31,7 +32,7 @@ def data_gen(docs, labels, weights=None, batch_size=64):
     """
         Batch generator
     """
-    if weights:
+    if weights is not None:
         data_indices = list(range(len(docs)))
         np.random.shuffle(data_indices)  # random shuffle the training documents
         docs = [docs[idx] for idx in data_indices]
@@ -52,7 +53,7 @@ def data_gen(docs, labels, weights=None, batch_size=64):
                 break
             batch_docs.append(np.asarray(docs[idx]))
             batch_labels.append(labels[idx])
-            if weights:
+            if weights is not None:
                 batch_weights.append(weights[idx])
 
         # convert to array
@@ -90,7 +91,11 @@ def get_model(embedding,
         hidden = Dense(dim_hidden, activation='relu')(hidden)
         hidden = BatchNormalization()(hidden)
     hidden = Dropout(dropout_rate)(hidden)
-    model_out = Dense(num_classes, activation='softmax')(hidden)
+
+    if num_classes < 3:
+        model_out = Dense(1, activation='softmax')(hidden)
+    else:
+        model_out = Dense(num_classes, activation='softmax')(hidden)
 
     ret_model = Model(model_in, model_out)
     ret_model.compile(loss='categorical_crossentropy', optimizer=RMSprop(lr=lr, clipnorm=clipping))
@@ -115,7 +120,6 @@ def get_tfidf(docs, sensitive_words):
     for i in range(len(docs)):
         for j in range(len(sensitive_words)):
             tfidf[i, j] = tf[i, j] * idf[j]
-    print(len(idxs_sens))
     return tfidf, idxs_sens
 
 
@@ -131,28 +135,19 @@ def make_weights(params):
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
         'docs': [data['docs'][item] for item in train_indices + val_indices],
-        'labels': [data['labels'][item] for item in train_indices],
-        params['domain_name']: [data[params['domain_name']][item] for item in train_indices],
+        'labels': [data['labels'][item] for item in train_indices + val_indices],
+        params['domain_name']: [data[params['domain_name']][item] for item in train_indices + val_indices],
     }
-    if params['over_sample']:
-        ros = RandomOverSampler(random_state=33)
-        sample_indices = list(range(len(train_data['docs'])))
-        sample_indices, _ = ros.fit_resample(sample_indices, train_data['labels'])
-        train_data = {
-            'docs': [train_data['docs'][item] for item in sample_indices],
-            'labels': [train_data['labels'][item] for item in sample_indices],
-            params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
-        }
 
     sensitive_z, idxs_sens = get_tfidf(train_data['docs'], sensitive_words)
     sensitive_labels = np.asarray(train_data['labels'])[idxs_sens]
     # obtaining the weights
-    clf = RandomForestClassifier(n_estimators=1000, max_depth=27, random_state=233, n_jobs=14, criterion='entropy')
+    clf = RandomForestClassifier(n_estimators=1000, max_depth=27, random_state=233, n_jobs=-1, criterion='entropy')
     y_pred = cross_val_predict(
         clf, sensitive_z[idxs_sens], sensitive_labels,
-        cv=250, n_jobs=1, method='predict_proba'
+        cv=5, n_jobs=-1, method='predict_proba'
     )
-    print('Refit log loss: %.5f' % (log_loss(sensitive_z[idxs_sens], y_pred[:, 1])))
+    # print('Refit log loss: %.5f' % (log_loss(sensitive_z[idxs_sens], y_pred[:, 1])))
 
     p1 = sum(sensitive_labels) / len(sensitive_labels)
     p0 = 1 - p1
@@ -177,7 +172,7 @@ def make_weights(params):
         (weights[i] / a if train_data['labels'][i] == 0 else weights[i] / b) for i in range(len(weights))])
     weights /= weights.mean()
 
-    ret = np.zeros(len(data))
+    ret = np.zeros(len(data['docs']))
     ret[train_indices + val_indices] = weights
     np.save(params['model_dir'] + "weights_{}.npy".format(params['dname']), ret)
 
@@ -187,7 +182,6 @@ def build_weight(params):
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
     debias_weights = np.load(params['model_dir'] + "weights_{}.npy".format(params['dname']))
 
-    # build tokenizer and weight
     # build tokenizer and weight
     tok_dir = os.path.dirname(params['dpath'])
     params['tok_dir'] = tok_dir
@@ -251,15 +245,25 @@ def build_weight(params):
         debias_weights = debias_weights[indices]
 
     # train
-    model = get_model(emb, num_lstm=1)
+    model = get_model(
+        emb, num_lstm=1, max_seq_len=params['max_len'],
+        dim_hidden=params['emb_dim'], num_classes=params['num_label'],
+        dropout_rate=params['dp_rate'], lr=params['lr'], clipping=1
+    )
     best_valid = 0.0
-    for _ in tqdm(range(params['epoch'])):
+    cl_weights = class_weight.compute_class_weight(
+        class_weight='balanced', classes=np.unique(train_data['labels']),
+        y=train_data['labels']
+    )
+    cl_weights = dict(enumerate(cl_weights))
+
+    for _ in tqdm(range(params['epochs'])):
         train_iter = data_gen(train_data['docs'], train_data['labels'], debias_weights, params['batch_size'])
 
         for x_train, y_labels, x_weights in train_iter:
             model.train_on_batch(
                 x=x_train, y=y_labels, sample_weight=x_weights,
-                class_weight='auto'
+                class_weight=cl_weights
             )
 
         # valid
@@ -269,7 +273,7 @@ def build_weight(params):
         for x_dev, y_dev, _ in dev_iter:
             x_dev = np.asarray(x_dev)
             tmp_preds = model.predict(x_dev)
-            for item_tmp in tmp_preds[0]:
+            for item_tmp in tmp_preds:
                 y_preds_dev.append(np.round(item_tmp[0]))
             for item_tmp in y_dev:
                 y_devs.append(int(item_tmp))
@@ -286,8 +290,9 @@ def build_weight(params):
             # evaluate on the test set
             for x_test, y_test, _ in test_iter:
                 x_test = np.asarray(x_test)
-                tmp_preds = model.predict(x_test)
-                for item_tmp in tmp_preds[0]:
+                tmp_preds = model.predict_proba(x_test)
+                for item_tmp in tmp_preds:
+                    y_probs.append(item_tmp[0])
                     y_preds.append(np.round(item_tmp[0]))
                 for item_tmp in y_test:
                     y_trues.append(int(item_tmp))
@@ -382,6 +387,7 @@ if __name__ == '__main__':
             'bidirectional': False,
             'device': args.device,
             'num_label': 2,
+            'max_feature': 10000,
         }
 
         make_weights(parameters)
