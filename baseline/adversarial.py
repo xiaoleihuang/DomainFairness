@@ -334,7 +334,7 @@ def build_base(params):
             y_trues.extend(input_labels.to('cpu').numpy())
         scheduler.step(valid_loss / len(valid_data_loader))
 
-        eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='weighted')
+        eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='macro')
         if eval_score > best_score:
             best_score = eval_score
             torch.save(base_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
