@@ -255,6 +255,7 @@ def build_weight(params):
         class_weight='balanced', classes=np.unique(train_data['labels']),
         y=train_data['labels']
     )
+    cl_weights = [np.exp(item / sum(cl_weights)) for item in cl_weights]
     cl_weights = dict(enumerate(cl_weights))
 
     for _ in tqdm(range(params['epochs'])):
@@ -290,7 +291,7 @@ def build_weight(params):
             # evaluate on the test set
             for x_test, y_test, _ in test_iter:
                 x_test = np.asarray(x_test)
-                tmp_preds = model.predict_proba(x_test)
+                tmp_preds = model.predict(x_test)
                 for item_tmp in tmp_preds:
                     y_probs.append(item_tmp[0])
                     y_preds.append(np.round(item_tmp[0]))
