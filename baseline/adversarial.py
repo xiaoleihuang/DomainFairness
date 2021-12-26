@@ -31,7 +31,7 @@ class DeepMojiModel(nn.Module):
         self.num_classes = self.params['num_label']
         if self.num_classes <= 3:
             self.num_classes = 1
-            
+
         self.adv_level = self.params['adv_level']
         self.n_hidden = self.params['n_hidden']
         self.device = self.params['device']
@@ -120,7 +120,10 @@ class Discriminator(nn.Module):
         self.fc1 = nn.Linear(params['emb_dim'], params['adv_units'])
         self.LeakyReLU = nn.LeakyReLU()
         self.fc2 = nn.Linear(params['adv_units'], params['adv_units'])
-        self.fc3 = nn.Linear(params['adv_units'], len(params['unique_domains']))
+        if len(params['unique_domains']) > 2:
+            self.fc3 = nn.Linear(params['adv_units'], len(params['unique_domains']))
+        else:
+            self.fc3 = nn.Linear(params['adv_units'], 1)
 
     def forward(self, inputs):
         if self.GR:
@@ -261,12 +264,12 @@ def build_base(params):
             adv_optimizer.zero_grad()
 
             predictions = base_model(input_docs)
-            loss = criterion(predictions, input_labels)
+            loss = criterion(predictions.squeeze(), input_labels)
             train_loss += loss.item()
 
             hs = base_model.hidden(input_docs)
             adv_predictions = discriminator(hs)
-            loss += criterion(adv_predictions, input_domains)
+            loss += criterion(adv_predictions.squeeze(), input_domains)
 
             loss_avg = train_loss / (step + 1)
             if (step + 1) % 101 == 0:
@@ -295,7 +298,7 @@ def build_base(params):
                 input_docs, input_labels, input_domains = valid_batch
                 hs = base_model.hidden(input_docs)
                 adv_predictions = discriminator(hs)
-                adv_loss_item = criterion(adv_predictions, input_domains)
+                adv_loss_item = criterion(adv_predictions.squeeze(), input_domains)
                 adv_loss_item.backward()
                 torch.nn.utils.clip_grad_norm(discriminator.parameters(), params['clipping_value'])
                 adv_optimizer.step()
@@ -306,7 +309,7 @@ def build_base(params):
             input_docs, input_labels, input_domains = valid_batch
             with torch.no_grad():
                 predictions = base_model(input_docs)
-            valid_loss_batch = criterion(predictions, input_labels)
+            valid_loss_batch = criterion(predictions.squeeze(), input_labels)
             valid_loss += valid_loss_batch.item()
 
             logits = torch.sigmoid(predictions.detach().cpu()).numpy()
