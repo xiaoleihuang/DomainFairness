@@ -148,8 +148,9 @@ def domain_rnn(params):
     }
     if params['over_sample']:
         ros = RandomOverSampler(random_state=33)
-        sample_indices = list(range(len(train_data['docs'])))
+        sample_indices = [[item] for item in range(len(train_data['docs']))]
         sample_indices, _ = ros.fit_resample(sample_indices, train_data['labels'])
+        sample_indices = [item[0] for item in sample_indices]
         train_data = {
             'docs': [train_data['docs'][item] for item in sample_indices],
             'labels': [train_data['labels'][item] for item in sample_indices],
