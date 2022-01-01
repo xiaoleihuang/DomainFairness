@@ -297,12 +297,12 @@ if __name__ == '__main__':
         # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
         # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
         # ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
-        # ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
-        ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
-        ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
+        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        # ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
+        # ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
         ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
-        ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
-        ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
+        # ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
+        # ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
     ]
 
     for data_entry in data_list:
@@ -313,7 +313,7 @@ if __name__ == '__main__':
 
         parameters = {
             'result_path': os.path.join(
-                result_dir, '{}-{}.txt'.format(data_entry[0], os.path.basename(__file__))
+                result_dir, '{}.txt'.format(os.path.basename(__file__))
             ),
             'model_dir': model_dir,
             'dname': data_entry[0],
@@ -322,7 +322,7 @@ if __name__ == '__main__':
             'max_feature': 15000,
             'use_large': False,
             'domain_name': 'gender',
-            'over_sample': False,
+            'over_sample': True,
             'epochs': 20,
             'batch_size': args.batch_size,
             'lr': args.lr,

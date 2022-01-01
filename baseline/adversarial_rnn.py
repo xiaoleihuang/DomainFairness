@@ -45,38 +45,68 @@ class DeepMojiModel(nn.Module):
 
         # embedding layer, original implementation uses a linear layer to randomly initialize embeddings
         if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
-            self.dense1 = nn.EmbeddingBag.from_pretrained(
+            # self.dense1 = nn.EmbeddingBag.from_pretrained(
+            #     torch.FloatTensor(np.load(self.params['word_emb_path'], allow_pickle=True))
+            # )
+            self.dense1 = nn.Embedding.from_pretrained(
                 torch.FloatTensor(np.load(self.params['word_emb_path'], allow_pickle=True))
             )
         else:
-            self.dense1 = nn.EmbeddingBag(
+            # self.dense1 = nn.EmbeddingBag(
+            #     self.emb_size, self.hidden_size
+            # )
+            self.dense1 = nn.Embedding(
                 self.emb_size, self.hidden_size
             )
 
-        self.dense2 = [nn.Linear(self.dense1.embedding_dim, self.hidden_size).to(self.device) for _ in range(self.n_hidden)]
+        if self.params['bidirectional']:
+            self.word_hidden_size = self.params['emb_dim'] // 2
+        else:
+            self.word_hidden_size = self.params['emb_dim']
+        self.dense2 = nn.GRU(
+            self.dense1.embedding_dim, self.word_hidden_size,
+            bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
+            batch_first=True
+        )
+        # self.dense2 = [nn.Linear(self.dense1.embedding_dim, self.hidden_size).to(self.device) for _ in range(self.n_hidden)]
         self.dense3 = nn.Linear(self.hidden_size, self.num_classes)
 
     def forward(self, inputs):
         out = self.dense1(inputs)
-        out = self.AF(out)
-        for hl in self.dense2:
-            out = self.dropout(out)
-            out = hl(out)
-            out = self.tanh(out)
-        out = self.dense3(out)
+        #out = self.AF(out)
+        #for hl in self.dense2:
+        #    out = self.dropout(out)
+        #    out = hl(out)
+        #    out = self.tanh(out)
+        # RNN-version
+        _, doc_general = self.dense2(out)  # omit hidden vectors
+
+        # concatenate hidden state
+        if self.params['bidirectional']:
+            doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
+
+        out = self.dense3(doc_general)
         return out
 
     def hidden(self, inputs):
         assert self.adv_level in {0, -1, -2}
         out = self.dense1(inputs)
-        out = self.AF(out)
+        #out = self.AF(out)
         if self.adv_level == -2:
             return out
         else:
-            for hl in self.dense2:
-                out = self.dropout(out)
-                out = hl(out)
-                out = self.tanh(out)
+            #for hl in self.dense2:
+            #    out = self.dropout(out)
+            #    out = hl(out)
+            #    out = self.tanh(out)
+            _, out = self.dense2(out)  # omit hidden vectors
+            if self.params['bidirectional']:
+                out = torch.cat((out[0, :, :], out[1, :, :]), -1)
+            if out.shape[0] == 1:
+                out = out.squeeze(dim=0)
+
             if self.adv_level == -1:
                 return out
             else:
@@ -122,12 +152,13 @@ class Discriminator(nn.Module):
 
         self.GR = False
         self.grad_rev = GradientReversal(params['LAMBDA'])
-        if 'word_emb_path' in params and os.path.exists(params['word_emb_path']):
-            emb_dim = np.load(params['word_emb_path'], allow_pickle=True)
-            emb_dim = emb_dim.shape[1]
-            self.fc1 = nn.Linear(emb_dim, params['adv_units'])
-        else:
-            self.fc1 = nn.Linear(params['emb_dim'], params['adv_units'])
+        self.fc1 = nn.Linear(params['emb_dim'], params['adv_units'])
+        #if 'word_emb_path' in params and os.path.exists(params['word_emb_path']):
+        #    emb_dim = np.load(params['word_emb_path'], allow_pickle=True)
+        #    emb_dim = emb_dim.shape[1]
+        #    self.fc1 = nn.Linear(emb_dim, params['adv_units'])
+        #else:
+        #    self.fc1 = nn.Linear(params['emb_dim'], params['adv_units'])
 
         self.LeakyReLU = nn.LeakyReLU()
         self.fc2 = nn.Linear(params['adv_units'], params['adv_units'])
@@ -307,8 +338,6 @@ def build_base(params):
         y_preds = []
         y_trues = []
         discriminator.GR = False
-        base_model.eval()
-        discriminator.eval()
         # converge the discriminator first
         for _ in range(3):
             for valid_batch in train_data_loader:
@@ -326,6 +355,8 @@ def build_base(params):
                 torch.nn.utils.clip_grad_norm_(discriminator.parameters(), params['clipping_value'])
                 adv_optimizer.step()
 
+        base_model.eval()
+        discriminator.eval()
         valid_loss = 0.0
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
@@ -427,15 +458,15 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
-        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
-        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
-        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
-        ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
-        ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
+        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        # ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        # ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        # ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
+        # ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
         ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
         ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
-        ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
+        # ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
     ]
 
     for data_entry in tqdm(data_list):
@@ -452,7 +483,7 @@ if __name__ == '__main__':
             'max_feature': 15000,
             'use_large': False,
             'domain_name': 'gender',
-            'over_sample': False,
+            'over_sample': True,
             'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'epochs': 20,
             'batch_size': args.batch_size,

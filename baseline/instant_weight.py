@@ -11,7 +11,7 @@ import datetime
 
 from keras.utils import to_categorical
 from keras.models import Model
-from keras.layers import Input, Dense, Embedding, GRU, BatchNormalization, Dropout
+from keras.layers import Input, Dense, Embedding, LSTM, GRU, Bidirectional, BatchNormalization, Dropout
 from keras.optimizers import RMSprop
 from keras_preprocessing.sequence import pad_sequences
 
@@ -76,19 +76,19 @@ def get_model(embedding,
               max_seq_len=35,
               dropout_rate=0.5,
               lr=1e-3,
-              clipping=5.0):
+              clipping=0.5):
     model_in = Input(shape=(max_seq_len,), dtype='int32')
     embedding_layer = Embedding(embedding.shape[0],
                                 embedding.shape[1],
                                 mask_zero=False,
                                 weights=[embedding],
-                                trainable=False,
+                                trainable=True,
                                 input_length=max_seq_len)
     hidden = embedding_layer(model_in)
 
     for j in range(num_lstm):
-        rnn_cell = GRU
-        lstm_layer = rnn_cell(dim_hidden, return_sequences=(j != num_lstm - 1))
+        rnn_cell = LSTM
+        lstm_layer = Bidirectional(rnn_cell(dim_hidden, return_sequences=(j != num_lstm - 1)))
         hidden = lstm_layer(hidden)
 
     for _ in range(num_hidden):
@@ -146,7 +146,8 @@ def make_weights(params):
     sensitive_z, idxs_sens = get_tfidf(train_data['docs'], sensitive_words)
     sensitive_labels = np.asarray(train_data['labels'])[idxs_sens]
     # obtaining the weights
-    clf = RandomForestClassifier(n_estimators=1000, max_depth=27, random_state=233, n_jobs=-1, criterion='entropy')
+    clf = RandomForestClassifier(
+        n_estimators=1000, class_weight='balanced', max_depth=27, random_state=233, n_jobs=-1, criterion='entropy')
     y_pred = cross_val_predict(
         clf, sensitive_z[idxs_sens], sensitive_labels,
         cv=5, n_jobs=-1, method='predict_proba'
@@ -165,11 +166,11 @@ def make_weights(params):
     propensity[idxs_sens] = np.array([
         y_pred[i, train_data['labels'][idxs_sens[i]]] for i in range(len(idxs_sens))])
     # normalize the propensity
-    propensity = np.asanyarray([item if item != 0 else 2. for item in propensity])
+    # propensity = np.asanyarray([item if item != 0 else 1. for item in propensity])
     np.save(params['model_dir'] + "propensity_%s.npy" % params['dname'], propensity)
     # propensity = np.load(dir_processed + "propensity_%s.npy" % name_dataset)
 
-    weights = 1 / propensity
+    weights = np.asarray([1/item if item > 0 else 0 for item in propensity])
     a = np.mean(
         np.array([weights[i] for i in range(len(weights)) if train_data['labels'][i] == 0]))
     b = np.mean(
@@ -255,7 +256,7 @@ def build_weight(params):
     model = get_model(
         emb, num_lstm=1, max_seq_len=params['max_len'],
         dim_hidden=params['emb_dim'], num_classes=params['num_label'],
-        dropout_rate=params['dp_rate'], lr=params['lr'], clipping=1
+        dropout_rate=params['dp_rate'], lr=params['lr'], clipping=0.5
     )
     best_valid = 0.0
     cl_weights = class_weight.compute_class_weight(
@@ -270,8 +271,9 @@ def build_weight(params):
 
         for x_train, y_labels, x_weights in train_iter:
             model.train_on_batch(
-                x=x_train, y=y_labels, sample_weight=x_weights,
-                class_weight=cl_weights
+                x=x_train, y=y_labels, #sample_weight=x_weights,
+                #class_weight=cl_weights
+                class_weight={1:1, 0:3}
             )
 
         # valid
@@ -299,6 +301,7 @@ def build_weight(params):
             for x_test, y_test, _ in test_iter:
                 x_test = np.asarray(x_test)
                 tmp_preds = model.predict(x_test)
+                print(tmp_preds)
                 for item_tmp in tmp_preds:
                     y_probs.append(item_tmp[0])
                     y_preds.append(np.round(item_tmp[0]))
@@ -360,15 +363,15 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
-        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
-        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
-        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        #['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        #['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
         ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
         ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
         ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
         ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
-        ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
+        # ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
     ]
 
     for data_entry in tqdm(data_list):
@@ -380,9 +383,9 @@ if __name__ == '__main__':
             'dname': data_entry[0],
             'dpath': data_entry[1],
             'lang': data_entry[2],
-            'over_sample': True,
+            'over_sample': False,
             'domain_name': 'gender',
-            'epochs': 20,
+            'epochs': 10,
             'batch_size': args.batch_size,
             'lr': args.lr,
             'max_len': args.max_len,
@@ -395,7 +398,7 @@ if __name__ == '__main__':
             'bidirectional': False,
             'device': args.device,
             'num_label': 2,
-            'max_feature': 10000,
+            'max_feature': 15000,
         }
 
         make_weights(parameters)

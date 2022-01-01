@@ -1,63 +1,181 @@
+"""GRU and PyTorch version
+"""
 import os
-import argparse
 import datetime
-import re
+import argparse
+import pickle
 
 import numpy as np
-from sklearn import metrics
 from tqdm import tqdm
+from sklearn import metrics
+from imblearn.over_sampling import RandomOverSampler
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from imblearn.over_sampling import RandomOverSampler
-from transformers import BertForSequenceClassification
+from torch.utils.data import Dataset
+from keras.preprocessing.sequence import pad_sequences
+from transformers import BertTokenizer
+
 import utils
 
 
-def replace_words(doc, replace):
-    # replace numbers
-    doc = re.sub('^[0-9]+', 'number', doc)
-    # replace words
-    doc = [word if word not in replace else 'identity' for word in doc.split()]
+class TrainTorchDataset(Dataset):
+    def __init__(self, dataset, domain_name):
+        self.dataset = dataset
+        self.domain_name = domain_name
 
-    return ' '.join(doc)
+    def __len__(self):
+        return len(self.dataset['docs'])
+
+    def __getitem__(self, idx):
+        if self.domain_name in self.dataset:
+            return self.dataset['docs'][idx], self.dataset['labels'][idx], self.dataset[self.domain_name][idx], self.dataset['weights'][idx]
+        else:
+            return self.dataset['docs'][idx], self.dataset['labels'][idx], -1, self.dataset['weights'][idx]
 
 
-def build_bert(params):
-    # load the replacement words
-    replaces = set()
-    with open('../resources/lexicons/replace_{}.txt'.format(params['lang'])) as dfile:
-        for line in dfile:
-            # only use unigram
-            if len(line.split(' ')) > 1:
-                continue
+class TrainDataEncoder(object):
+    def __init__(self, params, mtype='rnn'):
+        """
 
-            replaces.add(line.strip())
+        :param params:
+        :param mtype: Model type, rnn or bert
+        """
+        self.params = params
+        self.mtype = mtype
+        if self.mtype == 'rnn':
+            self.tok = pickle.load(open(
+                os.path.join(params['tok_dir'], '{}-{}.tok'.format(params['dname'], params['lang'])), 'rb'))
+        elif self.mtype == 'bert':
+            self.tok = BertTokenizer.from_pretrained(params['bert_name'])
+        else:
+            raise ValueError('Only support BERT and RNN data encoders')
 
+    def __call__(self, batch):
+        docs = []
+        labels = []
+        domains = []
+        weights = []
+        for text, label, domain, weight in batch:
+            if self.mtype == 'bert':
+                text = self.tok.encode_plus(
+                    text, padding='max_length', max_length=self.params['max_len'],
+                    return_tensors='pt', return_token_type_ids=False,
+                    truncation=True,
+                )
+                docs.append(text['input_ids'][0])
+            else:
+                docs.append(text)
+            
+            labels.append(label)
+            domains.append(domain)
+            weights.append(weight)
+
+        labels = torch.tensor(labels, dtype=torch.long)
+        domains = torch.tensor(domains, dtype=torch.long)
+        weights = torch.tensor(weights, dtype=torch.float)
+        if self.mtype == 'rnn':
+            # padding and tokenize
+            docs = self.tok.texts_to_sequences(docs)
+            docs = pad_sequences(docs)
+            docs = torch.Tensor(docs).long()
+        else:
+            docs = torch.stack(docs).long()
+        return docs, labels, domains, weights
+
+
+
+class RegularRNN(nn.Module):
+    def __init__(self, params):
+        super(RegularRNN, self).__init__()
+        self.params = params
+
+        if 'word_emb_path' in self.params and os.path.exists(self.params['word_emb_path']):
+            self.wemb = nn.Embedding.from_pretrained(
+                torch.FloatTensor(np.load(
+                    self.params['word_emb_path'], allow_pickle=True))
+            )
+        else:
+            self.wemb = nn.Embedding(
+                self.params['max_feature'], self.params['emb_dim']
+            )
+            self.wemb.reset_parameters()
+            nn.init.kaiming_uniform_(self.wemb.weight, a=np.sqrt(5))
+
+        if self.params['bidirectional']:
+            self.word_hidden_size = self.params['emb_dim'] // 2
+        else:
+            self.word_hidden_size = self.params['emb_dim']
+
+        # domain adaptation
+        self.doc_net_general = nn.GRU(
+            self.wemb.embedding_dim, self.word_hidden_size,
+            bidirectional=self.params['bidirectional'], dropout=self.params['dp_rate'],
+            batch_first=True
+        )
+
+        # prediction
+        self.predictor = nn.Linear(
+            self.params['emb_dim'], self.params['num_label'])
+
+    def forward(self, input_docs):
+        # encode the document from different perspectives
+        doc_embs = self.wemb(input_docs)
+        _, doc_general = self.doc_net_general(doc_embs)  # omit hidden vectors
+
+        # concatenate hidden state
+        if self.params['bidirectional']:
+            doc_general = torch.cat((doc_general[0, :, :], doc_general[1, :, :]), -1)
+
+        if doc_general.shape[0] == 1:
+            doc_general = doc_general.squeeze(dim=0)
+
+        # prediction
+        doc_preds = self.predictor(doc_general)
+        return doc_preds
+
+
+def build_model(params):
     if torch.cuda.is_available() and params['device'] != 'cpu':
         device = torch.device(params['device'])
     else:
         device = torch.device('cpu')
     params['device'] = device
 
-    # load data
-    data_encoder = utils.DataEncoder(params, mtype='bert')
+    print('Loading Data...')
     data = utils.data_loader(dpath=params['dpath'], lang=params['lang'])
+    debias_weights = np.load(params['model_dir'] + "weights_{}.npy".format(params['dname']))
     params['unique_domains'] = np.unique(data[params['domain_name']])
+
+    # build tokenizer and weight
+    tok_dir = os.path.dirname(params['dpath'])
+    params['tok_dir'] = tok_dir
+    params['word_emb_path'] = os.path.join(
+        tok_dir, params['dname'] + '.npy'
+    )
+    tok = utils.build_tok(
+        data['docs'], max_feature=params['max_feature'],
+        opath=os.path.join(tok_dir, '{}-{}.tok'.format(params['dname'], params['lang']))
+    )
+    if not os.path.exists(params['word_emb_path']):
+        utils.build_wt(tok, params['emb_path'], params['word_emb_path'])
+    data_encoder = utils.DataEncoder(params, mtype='rnn')
+    train_data_encoder = TrainDataEncoder(params, mtype='rnn')
 
     train_indices, val_indices, test_indices = utils.data_split(data)
     train_data = {
-        'docs': [replace_words(data['docs'][item], replaces) for item in train_indices],
+        'docs': [data['docs'][item] for item in train_indices],
         'labels': [data['labels'][item] for item in train_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in train_indices],
     }
     valid_data = {
-        'docs': [replace_words(data['docs'][item], replaces) for item in val_indices],
+        'docs': [data['docs'][item] for item in val_indices],
         'labels': [data['labels'][item] for item in val_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in val_indices],
     }
     test_data = {
-        'docs': [replace_words(data['docs'][item], replaces) for item in test_indices],
+        'docs': [data['docs'][item] for item in test_indices],
         'labels': [data['labels'][item] for item in test_indices],
         params['domain_name']: [data[params['domain_name']][item] for item in test_indices],
     }
@@ -71,6 +189,7 @@ def build_bert(params):
             'labels': [train_data['labels'][item] for item in sample_indices],
             params['domain_name']: [train_data[params['domain_name']][item] for item in sample_indices],
         }
+        debias_weights = debias_weights[sample_indices]
 
     # too large data to fit memory, remove some
     # training data size: 200000
@@ -84,11 +203,13 @@ def build_bert(params):
             'labels': [train_data['labels'][item] for item in indices],
             params['domain_name']: [train_data[params['domain_name']][item] for item in indices],
         }
+        debias_weights = debias_weights[indices]
 
-    train_data = utils.TorchDataset(train_data, params['domain_name'])
+    train_data['weights'] = debias_weights
+    train_data = TrainTorchDataset(train_data, params['domain_name'])
     train_data_loader = DataLoader(
         train_data, batch_size=params['batch_size'], shuffle=True,
-        collate_fn=data_encoder
+        collate_fn=train_data_encoder
     )
     valid_data = utils.TorchDataset(valid_data, params['domain_name'])
     valid_data_loader = DataLoader(
@@ -102,11 +223,10 @@ def build_bert(params):
     )
 
     # build model
-    bert_model = BertForSequenceClassification.from_pretrained(params['bert_name'])
-    bert_model = bert_model.to(device)
-    # param_optimizer = list(bert_model.named_parameters())
-    # no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-    optimizer = torch.optim.Adam(bert_model.parameters(), lr=params['lr'])
+    rnn_model = RegularRNN(params)
+    rnn_model = rnn_model.to(device)
+    criterion = nn.CrossEntropyLoss(reduction='none').to(device)  # we will multiply with sample weights later
+    optimizer = torch.optim.RMSprop(rnn_model.parameters(), lr=params['lr'])
 
     # train the networks
     print('Start to train...')
@@ -114,16 +234,18 @@ def build_bert(params):
     best_score = 0.
     for epoch in tqdm(range(params['epochs'])):
         train_loss = 0
-        bert_model.train()
+        rnn_model.train()
 
         for step, train_batch in enumerate(train_data_loader):
             train_batch = tuple(t.to(device) for t in train_batch)
-            input_docs, input_labels, _ = train_batch
+            input_docs, input_labels, input_domains, input_weights = train_batch
             optimizer.zero_grad()
-            predictions = bert_model(**{
-                'input_ids': input_docs,
-            }, labels=input_labels)
-            loss = predictions.loss
+            predictions = rnn_model(**{
+                'input_docs': input_docs
+            })
+            loss = criterion(predictions.view(-1, params['num_label']), input_labels.view(-1))
+            loss = input_weights * loss
+            loss = loss.mean()
             train_loss += loss.item()
 
             loss_avg = train_loss / (step + 1)
@@ -139,15 +261,15 @@ def build_bert(params):
         # evaluate on the valid set
         y_preds = []
         y_trues = []
-        bert_model.eval()
+        rnn_model.eval()
         for valid_batch in valid_data_loader:
             valid_batch = tuple(t.to(device) for t in valid_batch)
             input_docs, input_labels, input_domains = valid_batch
             with torch.no_grad():
-                predictions = bert_model(**{
-                    'input_ids': input_docs,
+                predictions = rnn_model(**{
+                    'input_docs': input_docs,
                 })
-            logits = torch.sigmoid(predictions.logits.detach().cpu()).numpy()
+            logits = predictions.detach().cpu().numpy()
             pred_flat = np.argmax(logits, axis=1).flatten()
             y_preds.extend(pred_flat)
             y_trues.extend(input_labels.to('cpu').numpy())
@@ -155,7 +277,7 @@ def build_bert(params):
         eval_score = metrics.f1_score(y_pred=y_preds, y_true=y_trues, average='weighted')
         if eval_score > best_score:
             best_score = eval_score
-            torch.save(bert_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
+            torch.save(rnn_model, params['model_dir'] + '{}.pth'.format(os.path.basename(__file__)))
 
             y_preds = []
             y_probs = []
@@ -167,10 +289,10 @@ def build_bert(params):
                 input_docs, input_labels, input_domains = test_batch
 
                 with torch.no_grad():
-                    predictions = bert_model(**{
-                        'input_ids': input_docs,
+                    predictions = rnn_model(**{
+                        'input_docs': input_docs,
                     })
-                logits = torch.sigmoid(predictions.logits.detach().cpu()).numpy()
+                logits = predictions.detach().cpu().numpy()
                 pred_flat = np.argmax(logits, axis=1).flatten()
                 y_preds.extend(pred_flat)
                 y_trues.extend(input_labels.to('cpu').numpy())
@@ -179,7 +301,7 @@ def build_bert(params):
 
             with open(params['result_path'], 'a') as wfile:
                 wfile.write('{}...............................\n'.format(datetime.datetime.now()))
-                wfile.write('Performance Evaluation {}\n'.format(params['dname']))
+                wfile.write('Performance Evaluation for the task: {}\n'.format(params['dname']))
                 wfile.write('F1-weighted score: {}\n'.format(
                     metrics.f1_score(y_true=y_trues, y_pred=y_preds, average='weighted')
                 ))
@@ -187,8 +309,11 @@ def build_bert(params):
                 wfile.write('AUC score: {}\n'.format(
                     metrics.auc(fpr, tpr)
                 ))
-                wfile.write(metrics.classification_report(
-                    y_true=y_trues, y_pred=y_preds, digits=3) + '\n')
+                report = metrics.classification_report(
+                    y_true=y_trues, y_pred=y_preds, digits=3
+                )
+                print(report)
+                wfile.write(report)
                 wfile.write('\n')
 
                 wfile.write('Fairness Evaluation\n')
@@ -209,7 +334,6 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, help='Learning rate', default=.0001)
     parser.add_argument('--batch_size', type=int, help='Batch size', default=16)
     parser.add_argument('--max_len', type=int, help='Max length', default=512)
-    parser.add_argument('--lambdaV', type=float, help='lambda_v', default=1)
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
 
@@ -218,7 +342,7 @@ if __name__ == '__main__':
     model_dir = '../resources/model/'
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    model_dir = model_dir + os.path.basename(__file__) + '/'
+    model_dir = model_dir + 'instant_weight.py/'
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
     result_dir = '../resources/results/'
@@ -230,14 +354,14 @@ if __name__ == '__main__':
         # ['review_yelp-hotel_english', review_dir + 'yelp_hotel/yelp_hotel.tsv', 'english'],
         # ['review_yelp-rest_english', review_dir + 'yelp_rest/yelp_rest.tsv', 'english'],
         # ['review_twitter_english', review_dir + 'twitter/twitter.tsv', 'english'],
-        # ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
-        # ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
-        # ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
-        # ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
-        # ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
+        ['review_trustpilot_english', review_dir + 'trustpilot/united_states.tsv', 'english'],
+        ['review_trustpilot_french', review_dir + 'trustpilot/france.tsv', 'french'],
+        ['review_trustpilot_german', review_dir + 'trustpilot/german.tsv', 'german'],
+        ['review_trustpilot_danish', review_dir + 'trustpilot/denmark.tsv', 'danish'],
+        ['hatespeech_twitter_english', hate_speech_dir + 'english/corpus.tsv', 'english'],
         # ['hatespeech_twitter_spanish', hate_speech_dir + 'spanish/corpus.tsv', 'spanish'],
         # ['hatespeech_twitter_italian', hate_speech_dir + 'italian/corpus.tsv', 'italian'],
-        ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
+        # ['hatespeech_twitter_portuguese', hate_speech_dir + 'portuguese/corpus.tsv', 'portuguese'],
         # ['hatespeech_twitter_polish', hate_speech_dir + 'polish/corpus.tsv', 'polish'],
     ]
 
@@ -245,35 +369,26 @@ if __name__ == '__main__':
         print('Working on: ', data_entry)
 
         parameters = {
-            'result_path': os.path.join(
-                result_dir, '{}.txt'.format(os.path.basename(__file__))
-            ),
+            'result_path': os.path.join(result_dir, os.path.basename(__file__) + '.txt'),
             'model_dir': model_dir,
             'dname': data_entry[0],
             'dpath': data_entry[1],
             'lang': data_entry[2],
             'max_feature': 15000,
-            'use_large': False,
-            'domain_name': 'gender',
             'over_sample': True,
-            'epochs': 10,
+            'domain_name': 'gender',
+            'epochs': 20,
             'batch_size': args.batch_size,
             'lr': args.lr,
             'max_len': args.max_len,
             'dp_rate': .2,
-            'optimizer': 'adamw',
-            'bert_name': 'bert-base-uncased',  # vinai/bertweet-base
+            'optimizer': 'rmsprop',
+            'emb_path': '../resources/embeddings/{}.vec'.format(data_entry[2]),  # adjust for different languages
             'emb_dim': 200,
             'unique_domains': [],
             'bidirectional': False,
             'device': args.device,
             'num_label': 2,
-            'kl_score': 0.01,
-            'lambda_v': args.lambdaV
         }
 
-        # adjust parameters for other languages
-        if parameters['lang'] != 'english':
-            parameters['bert_name'] = 'bert-base-multilingual-uncased'
-
-        build_bert(parameters)
+        build_model(parameters)
