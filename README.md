@@ -43,7 +43,7 @@ Please email **xiaolei.huang@memphis.edu** for further discussion.
 
 
 # Citation
-If you use our corpus in your publication, please kindly cite this [paper](https://arxiv.org/pdf/2002.10361.pdf):
+If you use our corpus in your publication, please kindly cite this [paper](https://arxiv.org/pdf/2204.05459.pdf):
 
 ```
 @inproceedings{huang2022-naacl,
