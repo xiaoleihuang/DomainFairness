@@ -1,5 +1,5 @@
 # Adaptation Methods to Promote Multilingual Fairness NAACL - 2022
-Data and code repository to promote multilingual fairness for hate speech detection and recommendation system (rating prediction) for the NAACL 2022 paper [Easy Adaptation to Mitigate Gender Bias in Multilingual Text Classification](https://arxiv.org/pdf/2204.05459.pdf).
+Data and code repository to promote multilingual fairness for hate speech detection and recommendation system (rating prediction) for the NAACL 2022 paper [Easy Adaptation to Mitigate Gender Bias in Multilingual Text Classification](https://aclanthology.org/2022.naacl-main.52.pdf).
 
 
 # Data
@@ -46,17 +46,17 @@ Please email **xiaolei.huang@memphis.edu** for further discussion.
 If you use our corpus in your publication, please kindly cite this [paper](https://arxiv.org/pdf/2204.05459.pdf):
 
 ```
-@inproceedings{huang2022-naacl,
+@inproceedings{huang-2022-easy,
     title = "Easy Adaptation to Mitigate Gender Bias in Multilingual Text Classification",
     author = "Huang, Xiaolei",
     booktitle = "Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies",
-    month = july,
+    month = jul,
     year = "2022",
-    address = "Online",
+    address = "Seattle, United States",
     publisher = "Association for Computational Linguistics",
-    url = "https://arxiv.org/pdf/2204.05459.pdf",
-    doi = "",
-    pages = "",
+    url = "https://aclanthology.org/2022.naacl-main.52",
+    doi = "10.18653/v1/2022.naacl-main.52",
+    pages = "717--723",
     abstract = "Existing approaches to mitigate demographic biases evaluate on monolingual data, however, multilingual data has not been examined. In this work, we treat the gender as domains (e.g., male vs. female) and present a standard domain adaptation model to reduce the gender bias and improve performance of text classifiers under multilingual settings. We evaluate our approach on two text classification tasks, hate speech detection and rating prediction, and demonstrate the effectiveness of our approach with three fair-aware baselines.",
 }
 ```
